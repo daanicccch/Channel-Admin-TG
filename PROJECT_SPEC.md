@@ -405,30 +405,32 @@ class QwenClient {
 ```json
 {
   "channels": [
-    {
-      "username": "solana_daily",
-      "name": "Solana Daily",
-      "priority": "high",
-      "language": "en",
-      "category": "news",
-      "scrape_interval_minutes": 30
-    },
-    {
-      "username": "sol_ecosystem",
-      "name": "Solana Ecosystem",
-      "priority": "high",
-      "language": "ru",
-      "category": "analytics",
-      "scrape_interval_minutes": 60
-    },
-    {
-      "username": "crypto_insider_ru",
-      "name": "Крипто Инсайдер",
-      "priority": "medium",
-      "language": "ru",
-      "category": "general_crypto",
-      "scrape_interval_minutes": 60
-    }
+    { "username": "halt_moves", "name": "halt moves", "priority": "high", "language": "en", "category": "news", "scrape_interval_minutes": 30 },
+    { "username": "cryptoattack24", "name": "КриптоАтака 24 ☃️", "priority": "high", "language": "ru", "category": "news", "scrape_interval_minutes": 30 },
+    { "username": "dumb_money", "name": "DUMB MONEY", "priority": "high", "language": "en", "category": "news", "scrape_interval_minutes": 30 },
+    { "username": "spidersjournal", "name": "Spider's Journal", "priority": "high", "language": "ru", "category": "memecoins", "scrape_interval_minutes": 30 },
+    { "username": "digitalbios", "name": "Digital Bios", "priority": "high", "language": "ru", "category": "analytics", "scrape_interval_minutes": 30 },
+    { "username": "sarahonchain", "name": "Sarah on Chain", "priority": "high", "language": "en", "category": "memecoins", "scrape_interval_minutes": 20 },
+    { "username": "odyssey_pishet", "name": "Одиссей пишет", "priority": "high", "language": "ru", "category": "analytics", "scrape_interval_minutes": 60 },
+    { "username": "tradeinvestAndCat", "name": "Trade Invest & Cat", "priority": "high", "language": "ru", "category": "memecoins", "scrape_interval_minutes": 30 },
+    { "username": "culturecalls", "name": "Culture Calls", "priority": "high", "language": "en", "category": "memecoins", "scrape_interval_minutes": 20 },
+    { "username": "missorplays", "name": "Missor Plays", "priority": "high", "language": "en", "category": "memecoins", "scrape_interval_minutes": 20 },
+    { "username": "nftdaniel", "name": "NFT Daniel", "priority": "high", "language": "ru", "category": "memecoins", "scrape_interval_minutes": 30 },
+    { "username": "solanafloor", "name": "Solana Floor", "priority": "high", "language": "en", "category": "news", "scrape_interval_minutes": 15 },
+    { "username": "gmgnai", "name": "GMGN Alpha", "priority": "high", "language": "en", "category": "memecoins", "scrape_interval_minutes": 10 },
+    { "username": "pump_calls", "name": "Pump.fun Calls", "priority": "high", "language": "en", "category": "memecoins", "scrape_interval_minutes": 5 },
+    { "username": "moondetection", "name": "Moon Detection", "priority": "high", "language": "ru", "category": "memecoins", "scrape_interval_minutes": 15 },
+    { "username": "hypedetector", "name": "HypeDetector Alpha", "priority": "high", "language": "en", "category": "alpha", "scrape_interval_minutes": 10 },
+    { "username": "degen_news", "name": "Degen News", "priority": "high", "language": "en", "category": "memecoins", "scrape_interval_minutes": 15 },
+    { "username": "bull_calls", "name": "Bull Solana Calls", "priority": "high", "language": "en", "category": "signals", "scrape_interval_minutes": 20 },
+    { "username": "solana_daily", "name": "Solana Daily", "priority": "medium", "language": "en", "category": "ecosystem", "scrape_interval_minutes": 30 },
+    { "username": "defiapecalls", "name": "DeFi Ape Calls", "priority": "high", "language": "en", "category": "memecoins", "scrape_interval_minutes": 15 },
+    { "username": "lookonchain", "name": "Lookonchain", "priority": "high", "language": "en", "category": "analytics", "scrape_interval_minutes": 20 },
+    { "username": "sol_ecosystem", "name": "Solana Ecosystem", "priority": "medium", "language": "ru", "category": "analytics", "scrape_interval_minutes": 45 },
+    { "username": "crypton_off", "name": "Crypton", "priority": "medium", "language": "ru", "category": "news", "scrape_interval_minutes": 30 },
+    { "username": "dexscreener_solana", "name": "DexScreener Sol Alerts", "priority": "high", "language": "en", "category": "signals", "scrape_interval_minutes": 5 },
+    { "username": "whale_alert", "name": "Whale Alert", "priority": "medium", "language": "en", "category": "news", "scrape_interval_minutes": 15 },
+    { "username": "moby_insights", "name": "Moby Insights", "priority": "high", "language": "en", "category": "analytics", "scrape_interval_minutes": 20 }
   ],
   "settings": {
     "max_posts_per_channel": 50,
@@ -532,80 +534,86 @@ AI_FALLBACK=qwen
 ```markdown
 # Правила написания постов для крипто-канала
 
-## Общий стиль
-- Пиши как живой человек, а не как ИИ или новостное агентство
-- Используй разговорный, но экспертный тон
-- Допускается легкий сленг крипто-комьюнити: HODL, ape in, DYOR, NFA, LFG, WAGMI
-- НЕ используй: "в данной статье", "следует отметить", "необходимо подчеркнуть"
-- НЕ начинай посты со слов: "Друзья", "Итак", "Добрый день"
-- Можно начать с эмодзи + цепляющий заголовок или с горячего факта
+## 1. Стилистические фильтры (No-AI Detection)
 
-## Язык
-- Основной язык: русский
-- Технические термины можно оставлять на английском: TVL, APY, DEX, staking
-- Названия протоколов/токенов — на английском
+### Анти-шаблон
+- Запрещено использовать структуру «Введение — Основная часть — Заключение»
+- Начинай сразу с сути или горячего факта
 
-## Форматирование
-- Заголовок: жирный, с эмодзи
-- Абзацы: короткие, 2-3 предложения максимум
-- Между блоками: пустая строка или разделитель
-- Разделители: "━━━━━━━━━━", "▫️▫️▫️▫️▫️", "—", или просто пустая строка
-- Ключевые цифры выделять жирным или кодом: <code>$145.20</code>
-- Ссылки: [текст](url) или в конце поста блоком "Источники"
+### Слова-паразиты (ИСКЛЮЧИТЬ)
+- безусловно, в заключение, резюмируя, немаловажно, следует отметить, рассмотрим подробнее, как мы все знаем
 
-## Эмодзи
-- Использовать умеренно, 3-7 на пост
-- Заголовок: 1-2 эмодзи
-- В тексте: для акцентов, не в каждом предложении
-- Подходящие: 🔥 🚀 💰 📊 📈 📉 ⚡ 🎯 👀 ⚠️ 🔑 💎 🐂 🐻 🌊 ✅ ❌
-- НЕ использовать: 😂 🤣 😍 🥰 (слишком неформально для аналитики)
+### Запрещённый старт
+- Никаких приветствий: «Друзья», «Привет, криптаны»
 
-## Типы постов
+### Человеческий фактор
+- Используй короткие, динамичные предложения
+- Иногда допускай авторские отступления (например: «Пока все спали, киты выкупили пролив на $4M»)
 
-### 1. Дайджест (утро/вечер)
-- Формат: 3-5 коротких блоков, каждый про отдельную тему
-- Каждый блок: эмодзи + тема в 1 строку + 1-2 предложения деталей
-- В конце: вывод или вопрос к подписчикам
-- Длина: 800-1500 символов
+### Сленг (Ape-Style)
+- Используй уместно: ликва, декс, флэт, гем, щиток, заапить, побрили
 
-### 2. Аналитика (глубокий разбор)
-- Формат: одна тема, подробный разбор
-- Структура: проблема → данные → анализ → вывод
-- Обязательно: цифры, графики, сравнения
-- Длина: 1500-3000 символов
-- Обязательно картинка или инфографика
+## 2. Структурный регламент
 
-### 3. Алерт (срочное)
-- Формат: ⚡ ALERT + суть в 1 строку
-- Минимум текста, максимум конкретики
-- Цена, % изменения, что это значит
-- Длина: 300-800 символов
+### Форматирование цифр
+- Всегда выделяй котировки и объемы жирным или моноширинным шрифтом: `145.20 SOL` или **$1.2M**
 
-### 4. Мем/развлечение
-- Формат: картинка/мем + короткий комментарий
-- Использовать редко: 1-2 раза в неделю
-- Должно быть релевантно текущей ситуации на рынке
+### Разделители
+- Для разделения мыслей используй пустую строку
+- Раз в 2-3 поста используй графический разделитель — или ━━━━━━━━━━
 
-## Что НЕЛЬЗЯ
-- Давать финансовые советы ("покупайте", "продавайте")
-- Гарантировать рост/падение
-- Копировать текст дословно из источников
-- Публиковать непроверенные слухи как факты
-- Спамить однотипными постами
+### Заголовки
+- Короткие (до 5 слов), броские, с одним тематическим эмодзи
+- Без капслока
 
-## Что НУЖНО
-- Добавлять "NFA" / "DYOR" при упоминании конкретных токенов
-- Указывать источники данных
-- Давать контекст цифрам (сравнения с прошлым периодом)
-- Иногда задавать вопросы подписчикам (engagement)
-- Использовать опросы (1-2 раза в неделю)
+## 3. Типология контента (Матрица постов)
 
-## Вариативность
-- Не начинать каждый пост одинаково
-- Чередовать типы постов
-- Разная длина постов
-- Иногда — только картинка с коротким комментарием
-- Иногда — длинный лонгрид
+### Alpha Alert (Срочно)
+- Триггер: Резкий рост объёма, листинг, ликвидность
+- Стиль: Максимальный лаконизм. Суть → Метрика → Ссылка на DexScreener
+- Обязательно: Пометка DYOR в конце
+
+### Daily Digest (Утро/Вечер)
+- Стиль: 3-4 ключевых события. Одно событие — один абзац с буллитом
+- Фишка: Последний пункт — это личное мнение о главном событии дня
+
+### Deep Dive (Аналитика)
+- Стиль: Тезис → Данные (TVL, активность юзеров) → Вывод
+- Объём: Минимум воды, только hard data
+- Сравнивай текущие цифры с ATH или показателями прошлой недели
+
+### Market Sentiment (Настроение)
+- Адаптируйся под рынок
+- Если всё падает — пиши спокойно, без паники, ищи исторические параллели
+- Если всё растёт — притормаживай аудиторию, напоминай про фиксацию прибыли
+
+## 4. Ограничения и безопасность
+
+### NFA/DYOR
+- Добавляй эти аббревиатуры органично в текст, а не отдельным блоком в конце
+
+### Запрет на обещания
+- Никогда не пиши «сделает x100» или «гарантированный профит»
+- Используй вероятности: «есть потенциал теста уровня», «наблюдается аномальное накопление»
+
+### Уникальность
+- Не пересказывай новости
+- Если новость вышла везде, твой пост должен быть о том, как на этом заработать или почему это ловушка
+
+## 5. Правила использования эмодзи
+
+### Лимит
+- Строго не более 2-х эмодзи на весь пост
+
+### Расположение
+1. Первый эмодзи — в заголовке для обозначения темы
+2. Второй эмодзи (опционально) — в теле поста для акцента на самом важном показателе или в конце для логической точки
+
+### Стиль
+- Только минималистичные и «деловые» символы: 📊, 🟢, 🔴, ⚠️, 📌, ⚓️
+
+### Запрет
+- Никаких идущих подряд эмодзи (типа 🚀🚀🚀) или использования их вместо знаков препинания
 ```
 
 ---

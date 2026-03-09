@@ -1,28 +1,212 @@
 {
   "channels": [
     {
-      "username": "solana_daily",
-      "name": "Solana Daily",
+      "username": "halt_moves",
+      "name": "halt moves",
       "priority": "high",
       "language": "en",
       "category": "news",
       "scrape_interval_minutes": 30
     },
     {
-      "username": "sol_ecosystem",
-      "name": "Solana Ecosystem",
+      "username": "cryptoattack24",
+      "name": "КриптоАтака 24 ☃️",
+      "priority": "high",
+      "language": "ru",
+      "category": "news",
+      "scrape_interval_minutes": 30
+    },
+    {
+      "username": "dumb_money",
+      "name": "DUMB MONEY",
+      "priority": "high",
+      "language": "en",
+      "category": "news",
+      "scrape_interval_minutes": 30
+    },
+    {
+      "username": "spidersjournal",
+      "name": "Spider's Journal",
+      "priority": "high",
+      "language": "ru",
+      "category": "memecoins",
+      "scrape_interval_minutes": 30
+    },
+    {
+      "username": "digitalbios",
+      "name": "Digital Bios",
+      "priority": "high",
+      "language": "ru",
+      "category": "analytics",
+      "scrape_interval_minutes": 30
+    },
+    {
+      "username": "sarahonchain",
+      "name": "Sarah on Chain",
+      "priority": "high",
+      "language": "en",
+      "category": "memecoins",
+      "scrape_interval_minutes": 20
+    },
+    {
+      "username": "odyssey_pishet",
+      "name": "Одиссей пишет",
       "priority": "high",
       "language": "ru",
       "category": "analytics",
       "scrape_interval_minutes": 60
     },
     {
-      "username": "crypto_insider_ru",
-      "name": "Крипто Инсайдер",
+      "username": "tradeinvestAndCat",
+      "name": "Trade Invest & Cat",
+      "priority": "high",
+      "language": "ru",
+      "category": "memecoins",
+      "scrape_interval_minutes": 30
+    },
+    {
+      "username": "culturecalls",
+      "name": "Culture Calls",
+      "priority": "high",
+      "language": "en",
+      "category": "memecoins",
+      "scrape_interval_minutes": 20
+    },
+    {
+      "username": "missorplays",
+      "name": "Missor Plays",
+      "priority": "high",
+      "language": "en",
+      "category": "memecoins",
+      "scrape_interval_minutes": 20
+    },
+    {
+      "username": "nftdaniel",
+      "name": "NFT Daniel",
+      "priority": "high",
+      "language": "ru",
+      "category": "memecoins",
+      "scrape_interval_minutes": 30
+    },
+    {
+      "username": "solanafloor",
+      "name": "Solana Floor",
+      "priority": "high",
+      "language": "en",
+      "category": "news",
+      "scrape_interval_minutes": 15
+    },
+    {
+      "username": "gmgnai",
+      "name": "GMGN Alpha",
+      "priority": "high",
+      "language": "en",
+      "category": "memecoins",
+      "scrape_interval_minutes": 10
+    },
+    {
+      "username": "pump_calls",
+      "name": "Pump.fun Calls",
+      "priority": "high",
+      "language": "en",
+      "category": "memecoins",
+      "scrape_interval_minutes": 5
+    },
+    {
+      "username": "moondetection",
+      "name": "Moon Detection",
+      "priority": "high",
+      "language": "ru",
+      "category": "memecoins",
+      "scrape_interval_minutes": 15
+    },
+    {
+      "username": "hypedetector",
+      "name": "HypeDetector Alpha",
+      "priority": "high",
+      "language": "en",
+      "category": "alpha",
+      "scrape_interval_minutes": 10
+    },
+    {
+      "username": "degen_news",
+      "name": "Degen News",
+      "priority": "high",
+      "language": "en",
+      "category": "memecoins",
+      "scrape_interval_minutes": 15
+    },
+    {
+      "username": "bull_calls",
+      "name": "Bull Solana Calls",
+      "priority": "high",
+      "language": "en",
+      "category": "signals",
+      "scrape_interval_minutes": 20
+    },
+    {
+      "username": "solana_daily",
+      "name": "Solana Daily",
+      "priority": "medium",
+      "language": "en",
+      "category": "ecosystem",
+      "scrape_interval_minutes": 30
+    },
+    {
+      "username": "defiapecalls",
+      "name": "DeFi Ape Calls",
+      "priority": "high",
+      "language": "en",
+      "category": "memecoins",
+      "scrape_interval_minutes": 15
+    },
+    {
+      "username": "lookonchain",
+      "name": "Lookonchain",
+      "priority": "high",
+      "language": "en",
+      "category": "analytics",
+      "scrape_interval_minutes": 20
+    },
+    {
+      "username": "sol_ecosystem",
+      "name": "Solana Ecosystem",
       "priority": "medium",
       "language": "ru",
-      "category": "general_crypto",
-      "scrape_interval_minutes": 60
+      "category": "analytics",
+      "scrape_interval_minutes": 45
+    },
+    {
+      "username": "crypton_off",
+      "name": "Crypton",
+      "priority": "medium",
+      "language": "ru",
+      "category": "news",
+      "scrape_interval_minutes": 30
+    },
+    {
+      "username": "dexscreener_solana",
+      "name": "DexScreener Sol Alerts",
+      "priority": "high",
+      "language": "en",
+      "category": "signals",
+      "scrape_interval_minutes": 5
+    },
+    {
+      "username": "whale_alert",
+      "name": "Whale Alert",
+      "priority": "medium",
+      "language": "en",
+      "category": "news",
+      "scrape_interval_minutes": 15
+    },
+    {
+      "username": "moby_insights",
+      "name": "Moby Insights",
+      "priority": "high",
+      "language": "en",
+      "category": "analytics",
+      "scrape_interval_minutes": 20
     }
   ],
   "settings": {
