@@ -1,0 +1,33 @@
+{
+  "channels": [
+    {
+      "username": "solana_daily",
+      "name": "Solana Daily",
+      "priority": "high",
+      "language": "en",
+      "category": "news",
+      "scrape_interval_minutes": 30
+    },
+    {
+      "username": "sol_ecosystem",
+      "name": "Solana Ecosystem",
+      "priority": "high",
+      "language": "ru",
+      "category": "analytics",
+      "scrape_interval_minutes": 60
+    },
+    {
+      "username": "crypto_insider_ru",
+      "name": "Крипто Инсайдер",
+      "priority": "medium",
+      "language": "ru",
+      "category": "general_crypto",
+      "scrape_interval_minutes": 60
+    }
+  ],
+  "settings": {
+    "max_posts_per_channel": 50,
+    "lookback_hours": 24,
+    "min_views_threshold": 1000
+  }
+}

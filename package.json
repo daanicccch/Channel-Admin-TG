@@ -1,0 +1,25 @@
+{
+  "name": "crypto-digest-bot",
+  "version": "1.0.0",
+  "description": "Automated crypto digest Telegram bot with AI-powered content generation",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js --mode=auto",
+    "manual": "node src/index.js --mode=manual --type=digest",
+    "scrape": "node src/index.js --mode=scrape-only",
+    "setup": "node src/setup.js"
+  },
+  "dependencies": {
+    "telegram": "^2.26.8",
+    "telegraf": "^4.16.3",
+    "@google/generative-ai": "^0.21.0",
+    "openai": "^4.77.0",
+    "sql.js": "^1.11.0",
+    "sharp": "^0.33.5",
+    "node-cron": "^3.0.3",
+    "axios": "^1.7.9",
+    "winston": "^3.17.0",
+    "dotenv": "^16.4.7",
+    "input": "^1.0.1"
+  }
+}
