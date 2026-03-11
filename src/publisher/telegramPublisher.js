@@ -1,9 +1,9 @@
 const { Telegraf } = require('telegraf');
 const { config } = require('../config');
-const { runSql } = require('../utils/dbHelpers');
 const logger = require('../utils/logger');
 const { getTelegramEntityLength } = require('../generator/formatBuilder');
 const { TelegramUserPublisher } = require('./telegramUserPublisher');
+const { markPostPublished } = require('../utils/postStore');
 
 class TelegramPublisher {
   constructor() {
@@ -42,10 +42,7 @@ class TelegramPublisher {
       const messageId = result.message_id;
 
       try {
-        runSql(
-          "UPDATE posts SET telegram_message_id = ?, published_at = datetime('now') WHERE id = (SELECT MAX(id) FROM posts)",
-          [messageId]
-        );
+        markPostPublished(post._dbPostId, messageId);
       } catch (dbErr) {
         logger.error(`Error saving message_id to DB: ${dbErr.message}`);
       }
@@ -75,6 +72,7 @@ class TelegramPublisher {
           const retryResult = this.userPublisher
             ? await this.userPublisher.publish(post, channelId)
             : await this._sendPost(channelId, post, replyMarkup, mediaPaths);
+          markPostPublished(post._dbPostId, retryResult.message_id);
           logger.info(`Post published after retry, message_id=${retryResult.message_id}`);
           return retryResult.message_id;
         } catch (retryErr) {

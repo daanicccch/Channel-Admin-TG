@@ -3,6 +3,7 @@ const logger = require('../utils/logger');
 const styleEngine = require('./styleEngine');
 const formatBuilder = require('./formatBuilder');
 const mediaHandler = require('./mediaHandler');
+const postStore = require('../utils/postStore');
 
 const MAX_RETRIES = 2;
 const CAPTION_SAFE_TEXT_LIMIT = parseInt(process.env.TG_CAPTION_SAFE_TEXT_LIMIT || '900', 10);
@@ -19,10 +20,12 @@ class PostGenerator {
   async generatePost(type, analysisData, profile = null) {
     const { clusters = [], webData = {}, sentiment = {}, trends = [], leadMediaOverride = null } = analysisData || {};
     const enforceCaptionForSourceMedia = ['digest', 'alert'].includes(type);
+    const profileId = profile?.id || analysisData?.profileId || 'default';
     const leadMediaCandidate = leadMediaOverride || mediaHandler.selectLeadMediaPost(clusters, '', {
-      profileId: profile?.id || analysisData?.profileId || null,
+      profileId: profileId || null,
     });
     const sourceContext = this._buildSourceContext(leadMediaCandidate, clusters);
+    const recentPosts = postStore.getRecentPosts(profileId, 12);
 
     const rulesContent = styleEngine.loadRules(profile);
     let effectiveRulesContent = rulesContent;
@@ -46,6 +49,8 @@ class PostGenerator {
       leadMediaCandidate,
       sourceContext,
       enforceCaptionForSourceMedia,
+      recentPosts,
+      profileId,
     );
 
     let result = null;
@@ -65,6 +70,8 @@ class PostGenerator {
             humanizerRulesContent,
             leadMediaCandidate,
             enforceCaptionForSourceMedia,
+            recentPosts,
+            profileId,
           );
           result = await aiProvider.generateJSON(fixPrompt, { temperature: 0.2 });
         }
@@ -87,6 +94,13 @@ class PostGenerator {
         validationResult,
         postText,
         leadMediaCandidate ? sourceContext : null,
+      );
+      validationResult = this._appendSimilarityIssue(
+        validationResult,
+        postText,
+        profileId,
+        type,
+        recentPosts,
       );
 
       if (validationResult.valid) {
@@ -140,7 +154,7 @@ class PostGenerator {
       hashtags: result.hashtags || '',
       postType: result.post_type || type,
       _leadMediaCandidate: leadMediaCandidate,
-      _profileId: profile?.id || analysisData?.profileId || 'default',
+      _profileId: profileId,
       _profileTitle: profile?.title || 'Default channel',
       _targetChannelId: profile?.telegramChannelId || '',
     };
@@ -158,6 +172,8 @@ class PostGenerator {
     leadMediaCandidate,
     sourceContext = null,
     enforceCaptionForSourceMedia = false,
+    recentPosts = [],
+    profileId = 'default',
   ) {
     const typeNames = {
       digest: 'Дайджест (утро/вечер)',
@@ -188,6 +204,8 @@ class PostGenerator {
     const weeklyInstruction = type === 'weekly'
       ? `\nWEEKLY MODE:\nThis post must summarize the strongest events from the last 7 days, not expand one single case into an article.\nUse 2-4 distinct events if enough data exists.\nIf there is only one real event in the input, keep the post short and frame it as the main event of the week.\nKeep temporal sanity: if something appeared for a holiday and disappeared within 1-2 days, describe it plainly as a short-lived event.\nDo not turn a brief removal into tragedy, legend, or irreversible loss unless the source explicitly confirms permanence.\n`
       : '\n';
+    const typeBehaviorInstruction = this._getTypeBehaviorInstruction(type);
+    const memoryPrompt = postStore.buildMemoryPrompt(profileId, type, sourceContext?.anchorKeywords || []);
 
     return `Ты — редактор Telegram-канала о крипте. Тема поста определяется правилами канала, кластерами новостей, подключёнными каналами и веб-данными.
 
@@ -204,7 +222,7 @@ ${humanizerRulesContent || 'Сделай текст живым, конкретн
 Напиши пост типа: ${typeName}
 Используй шаблон для этого типа поста из раздела "ШАБЛОНЫ ПОСТОВ" выше.
 Текст должен звучать как живой пост в Telegram, а не как пресс-релиз или нейтральная заметка.
-${sourceFocusInstruction}${captionConstraintInstruction}${weeklyInstruction}
+${typeBehaviorInstruction}${sourceFocusInstruction}${captionConstraintInstruction}${weeklyInstruction}
 ДАННЫЕ ДЛЯ ПОСТА:
 
 Кластеры новостей:
@@ -221,6 +239,9 @@ ${JSON.stringify(compactTrends, null, 2)}
 
 Опорный source-post с картинкой:
 ${JSON.stringify(compactLeadMedia, null, 2)}
+
+НЕДАВНИЕ ПОСТЫ ЭТОГО КАНАЛА:
+${memoryPrompt}
 
 ТРЕБОВАНИЯ К ОТВЕТУ:
 Верни JSON-объект со следующими полями:
@@ -239,6 +260,8 @@ ${JSON.stringify(compactLeadMedia, null, 2)}
 - Не начинай пост с "Друзья", "Итак", "Добрый день"
 - Не используй фразы: "в данной статье", "следует отметить", "как мы все знаем", "безусловно", "резюмируя", "guaranteed", "to the moon"
 - Не выдумывай новые факты, ссылки, цифры и источники
+- Не повторяй недавний пост по заголовку, первой подводке, углу и ключевой мысли
+- Если тема пересекается с недавним постом, смени угол: alert = сигнал, digest = что уже понятно, analysis = механика и значение, weekly = место события в неделе
 - Если свежие timestamped веб-данные конфликтуют со старыми постами, опирайся на более свежие данные
 - Не сравнивай старые и новые метрики без точной даты или явного таймфрейма из источника
 - Сохраняй фактуру входных данных и не уводи пост в сторону от главной темы входного набора
@@ -246,7 +269,7 @@ ${JSON.stringify(compactLeadMedia, null, 2)}
 - Верни только JSON, без дополнительного текста`;
   }
 
-  _buildFixPrompt(previousResult, issues, type, rulesContent, humanizerRulesContent, leadMediaCandidate, enforceCaptionForSourceMedia) {
+  _buildFixPrompt(previousResult, issues, type, rulesContent, humanizerRulesContent, leadMediaCandidate, enforceCaptionForSourceMedia, recentPosts = [], profileId = 'default') {
     const mediaModeHint = leadMediaCandidate
       ? (
         enforceCaptionForSourceMedia
@@ -255,6 +278,7 @@ ${JSON.stringify(compactLeadMedia, null, 2)}
       )
       : 'Если текст слишком раздут, ужми его без потери основных фактов.';
     const numberLayoutHint = 'Если в посте есть офферы, сумма сделки, потеря или две валюты для одного и того же факта, не ставь их голыми строками друг под другом. Собирай в один читаемый блок: `— 100 000 ⭐️ (~1 400 TON)`.';
+    const memoryPrompt = postStore.buildMemoryPrompt(profileId, type, []);
 
     return `Предыдущая версия поста не прошла валидацию. Исправь следующие проблемы:
 
@@ -270,9 +294,12 @@ ${rulesContent || ''}
 Правила очеловечивания:
 ${humanizerRulesContent || ''}
 
+Недавние посты:
+${memoryPrompt}
+
 Тип поста: ${type}
 
-Исправь текст так, чтобы он звучал как живой пост редактора, а не как AI-черновик. Сохрани факты, цифры, HTML-теги и общий смысл. Если в тексте больше двух эмодзи, убери лишние. ${mediaModeHint} ${numberLayoutHint} Если есть сравнение старой и новой метрики без точной даты или явного таймфрейма, убери такое сравнение.
+Исправь текст так, чтобы он звучал как живой пост редактора, а не как AI-черновик. Сохрани факты, цифры, HTML-теги и общий смысл. Если в тексте больше двух эмодзи, убери лишние. Не повторяй недавние посты по заголовку, первой подводке и углу. ${mediaModeHint} ${numberLayoutHint} Если есть сравнение старой и новой метрики без точной даты или явного таймфрейма, убери такое сравнение.
 
 Верни JSON-объект с полями:
 {
@@ -283,6 +310,17 @@ ${humanizerRulesContent || ''}
 }
 
 Верни только JSON, без дополнительного текста.`;
+  }
+
+  _getTypeBehaviorInstruction(type) {
+    const instructions = {
+      alert: `\nTYPE BEHAVIOR:\nalert = the fastest signal.\n- Lead with one fresh trigger or hint.\n- Keep it compact and punchy.\n- Do not state that implementation is finished unless the source confirms it.\n- Shape: signal -> why people noticed -> short watchline.\n`,
+      digest: `\nTYPE BEHAVIOR:\ndigest = a fuller update than alert.\n- Explain what happened, what is already known, and why it matters now.\n- A short list of gifts, effects, or details is welcome.\n- Do not reuse alert phrasing; expand the angle.\n`,
+      analysis: `\nTYPE BEHAVIOR:\nanalysis = explanation mode.\n- Focus on mechanics and interpretation.\n- Explain why the event matters for collectors using only given facts.\n- Avoid turning it into a padded digest.\n`,
+      weekly: `\nTYPE BEHAVIOR:\nweekly = selective recap.\n- Connect events into the picture of the week.\n- No alert-style framing.\n- Each block must justify why it made the week.\n`,
+    };
+
+    return instructions[type] || '\n';
   }
 
   _compactClusters(clusters) {
@@ -385,6 +423,22 @@ ${humanizerRulesContent || ''}
         ...(validationResult?.issues || []),
         `Текст с картинкой слабо совпадает с source-post: найдено ${overlaps.length} ключевых маркеров из ${sourceContext.anchorKeywords.length}`,
       ])],
+    };
+  }
+
+  _appendSimilarityIssue(validationResult, postText, profileId, type, recentPosts = []) {
+    const issues = Array.isArray(validationResult?.issues) ? [...validationResult.issues] : [];
+    const similarPost = postStore.findSimilarPost(postText, profileId, type, { recentPosts });
+
+    if (similarPost) {
+      issues.push(
+        `Текст слишком похож на недавний пост [${similarPost.type}] "${similarPost.title}" (similarity=${similarPost.score.toFixed(2)}). Нужен другой угол, заголовок и первая подводка.`,
+      );
+    }
+
+    return {
+      valid: issues.length === 0,
+      issues: [...new Set(issues)],
     };
   }
 

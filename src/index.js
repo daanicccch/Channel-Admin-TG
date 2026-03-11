@@ -12,6 +12,7 @@ const { QueueManager } = require('./publisher/queueManager');
 const { Scheduler } = require('./publisher/scheduler');
 const { setupCommands } = require('./commands/botCommands');
 const { getChannelProfile, logChannelProfilesStartup } = require('./channelProfiles');
+const { insertGeneratedPost } = require('./utils/postStore');
 
 function parseArgs() {
   const args = { mode: 'manual', type: 'digest' };
@@ -84,6 +85,18 @@ async function generateFromAnalysis(postType = 'digest', analysisData = {}, opti
     ...analysisData,
     profileId: profile.id,
   };
+  post._dbPostId = insertGeneratedPost(post, {
+    profileId: profile.id,
+    postType,
+    sources: (analysisData.clusters || [])
+      .flatMap((cluster) => Array.isArray(cluster.sources) ? cluster.sources : [])
+      .filter(Boolean)
+      .slice(0, 20),
+    engagement: {
+      trends: Array.isArray(analysisData.trends) ? analysisData.trends.slice(0, 10) : [],
+      sentiment: analysisData.sentiment || {},
+    },
+  });
 
   logger.info(`Post generated for profile=${profile.id}`);
   return post;
