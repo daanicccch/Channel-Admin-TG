@@ -6,6 +6,7 @@ const logger = require('./utils/logger');
 const PROFILES_ROOT = path.join(config.paths.root, 'profiles');
 const LEGACY_PROFILES_FILE = path.join(config.paths.data, 'channel_profiles.json');
 const DEFAULT_WEB_SOURCES = ['cryptopanic', 'coingecko', 'defillama', 'dexscreener', 'birdeye'];
+let startupProfilesLogged = false;
 
 function resolvePathMaybe(filePath, baseDir = config.paths.root) {
   if (!filePath) return '';
@@ -159,8 +160,9 @@ function normalizeProfile(rawProfile, baseDir = config.paths.root) {
   return profile;
 }
 
-function loadProfilesFromDirectories() {
+function loadProfilesFromDirectories(diagnostics = []) {
   if (!fileExists(PROFILES_ROOT)) {
+    diagnostics.push(`profiles root not found: ${PROFILES_ROOT}`);
     return [];
   }
 
@@ -170,28 +172,51 @@ function loadProfilesFromDirectories() {
       const profileDir = path.join(PROFILES_ROOT, entry.name);
       const profileFile = path.join(profileDir, 'profile.json');
       if (!fileExists(profileFile)) {
+        diagnostics.push(`skipped "${entry.name}": missing profile.json at ${profileFile}`);
         return null;
       }
       const rawProfile = readJsonFileSafe(profileFile);
-      return normalizeProfile(rawProfile, profileDir);
+      if (!rawProfile) {
+        diagnostics.push(`skipped "${entry.name}": failed to read ${profileFile}`);
+        return null;
+      }
+      const normalized = normalizeProfile(rawProfile, profileDir);
+      if (!normalized) {
+        diagnostics.push(`skipped "${entry.name}": invalid profile.json contents`);
+        return null;
+      }
+      diagnostics.push(`loaded profile "${normalized.id}" from ${profileDir}`);
+      return normalized;
     })
     .filter(Boolean);
 }
 
-function loadProfilesFromLegacyFile() {
+function loadProfilesFromLegacyFile(diagnostics = []) {
   if (!fileExists(LEGACY_PROFILES_FILE)) {
+    diagnostics.push(`legacy profiles file not found: ${LEGACY_PROFILES_FILE}`);
     return [];
   }
 
   const parsed = readJsonFileSafe(LEGACY_PROFILES_FILE);
-  if (!parsed) return [];
+  if (!parsed) {
+    diagnostics.push(`failed to read legacy profiles file: ${LEGACY_PROFILES_FILE}`);
+    return [];
+  }
 
   const rawProfiles = Array.isArray(parsed)
     ? parsed
     : (Array.isArray(parsed.profiles) ? parsed.profiles : []);
 
   return rawProfiles
-    .map((profile) => normalizeProfile(profile, config.paths.root))
+    .map((profile, index) => {
+      const normalized = normalizeProfile(profile, config.paths.root);
+      if (!normalized) {
+        diagnostics.push(`skipped legacy profile at index ${index}: invalid data`);
+        return null;
+      }
+      diagnostics.push(`loaded legacy profile "${normalized.id}" from ${LEGACY_PROFILES_FILE}`);
+      return normalized;
+    })
     .filter(Boolean);
 }
 
@@ -223,6 +248,41 @@ function getChannelProfiles() {
   return Array.from(profiles.values());
 }
 
+function logChannelProfilesStartup(force = false) {
+  if (startupProfilesLogged && !force) {
+    return;
+  }
+
+  startupProfilesLogged = true;
+  const diagnostics = [];
+  const profilesRootExists = fileExists(PROFILES_ROOT);
+  const directoryProfiles = loadProfilesFromDirectories(diagnostics);
+  const legacyProfiles = directoryProfiles.length > 0 ? [] : loadProfilesFromLegacyFile(diagnostics);
+  const profiles = getChannelProfiles();
+
+  logger.info(`channelProfiles: root=${PROFILES_ROOT} exists=${profilesRootExists}`);
+
+  for (const line of diagnostics) {
+    logger.info(`channelProfiles: ${line}`);
+  }
+
+  if (profiles.length === 0) {
+    logger.warn('channelProfiles: no profiles available after loading');
+    return;
+  }
+
+  logger.info(`channelProfiles: active profiles (${profiles.length})`);
+  for (const profile of profiles) {
+    logger.info(
+      `channelProfiles: ${profile.id} title="${profile.title}" target=${profile.telegramChannelId || 'not set'} source=${profile.baseDir || 'unknown'}`
+    );
+  }
+
+  if (directoryProfiles.length === 0 && legacyProfiles.length === 0) {
+    logger.warn('channelProfiles: no custom profiles found, using default fallback profile');
+  }
+}
+
 function getChannelProfile(profileId) {
   const profiles = getChannelProfiles();
   if (!profileId) return profiles[0] || null;
@@ -232,4 +292,5 @@ function getChannelProfile(profileId) {
 module.exports = {
   getChannelProfiles,
   getChannelProfile,
+  logChannelProfilesStartup,
 };

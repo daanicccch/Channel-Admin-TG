@@ -11,7 +11,7 @@ const { TelegramPublisher } = require('./publisher/telegramPublisher');
 const { QueueManager } = require('./publisher/queueManager');
 const { Scheduler } = require('./publisher/scheduler');
 const { setupCommands } = require('./commands/botCommands');
-const { getChannelProfile } = require('./channelProfiles');
+const { getChannelProfile, logChannelProfilesStartup } = require('./channelProfiles');
 
 function parseArgs() {
   const args = { mode: 'manual', type: 'digest' };
@@ -180,6 +180,7 @@ async function main() {
   const profileId = args.profile;
 
   await initDb();
+  logChannelProfilesStartup();
   logger.info(`Bot starting mode=${mode} type=${postType} profile=${profileId || 'default'}`);
 
   switch (mode) {
