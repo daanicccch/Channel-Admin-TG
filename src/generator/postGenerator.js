@@ -21,23 +21,18 @@ class PostGenerator {
     const { clusters = [], webData = {}, sentiment = {}, trends = [], leadMediaOverride = null } = analysisData || {};
     const enforceCaptionForSourceMedia = ['digest', 'alert'].includes(type);
     const profileId = profile?.id || analysisData?.profileId || 'default';
-    const leadMediaCandidate = leadMediaOverride || mediaHandler.selectLeadMediaPost(clusters, '', {
+    let leadMediaCandidate = leadMediaOverride || mediaHandler.selectLeadMediaPost(clusters, '', {
       profileId: profileId || null,
     });
-    const sourceContext = this._buildSourceContext(leadMediaCandidate, clusters);
+    let sourceContext = this._buildSourceContext(leadMediaCandidate, clusters);
     const recentPosts = postStore.getRecentPosts(profileId, 12);
+    const triedSourceKeys = new Set([leadMediaCandidate?.sourceKey].filter(Boolean));
 
     const rulesContent = styleEngine.loadRules(profile);
-    let effectiveRulesContent = rulesContent;
-    if (leadMediaCandidate) {
-      effectiveRulesContent += `\n\n## Source-first mode\n- Rewrite only the exact source post tied to the image.\n- Do not mix another story from the cluster.\n- Text and image must describe the same event.\n- Anchor keywords: ${JSON.stringify(sourceContext.anchorKeywords || [])}`;
-    }
-    if (type === 'weekly') {
-      effectiveRulesContent += '\n\n## Weekly mode\n- Summarize the strongest events from the last 7 days.\n- Use 2-4 distinct events if enough data exists.\n- Do not turn one single event into a fake weekly overview.\n- If the input only has one real event, frame it as the main event of the week and keep the post compact.\n- Keep temporal sanity: if an item appeared for a holiday or was removed within 1-2 days, describe it as a short-lived event, not as a historic tragedy or permanent loss.\n- Do not invent permanence, collector panic, or long-term market meaning unless the source explicitly states it.';
-    }
     const templatesContent = styleEngine.loadTemplates(profile);
     const humanizerRulesContent = styleEngine.loadHumanizerRules(profile);
-    const prompt = this._buildPrompt(
+    let effectiveRulesContent = this._buildEffectiveRules(type, rulesContent, leadMediaCandidate, sourceContext);
+    let prompt = this._buildPrompt(
       type,
       effectiveRulesContent,
       templatesContent,
@@ -104,6 +99,41 @@ class PostGenerator {
         sourceContext,
       );
 
+      if (!validationResult.valid && this._hasSimilarityIssue(validationResult)) {
+        const alternativeLeadMediaCandidate = mediaHandler.selectAlternativeLeadMediaPost(
+          clusters,
+          [...triedSourceKeys],
+          postText,
+          { profileId },
+        );
+
+        if (alternativeLeadMediaCandidate?.sourceKey) {
+          triedSourceKeys.add(alternativeLeadMediaCandidate.sourceKey);
+          leadMediaCandidate = alternativeLeadMediaCandidate;
+          sourceContext = this._buildSourceContext(leadMediaCandidate, clusters);
+          effectiveRulesContent = this._buildEffectiveRules(type, rulesContent, leadMediaCandidate, sourceContext);
+          prompt = this._buildPrompt(
+            type,
+            effectiveRulesContent,
+            templatesContent,
+            humanizerRulesContent,
+            sourceContext.clustersForPrompt,
+            webData,
+            sentiment,
+            trends,
+            leadMediaCandidate,
+            sourceContext,
+            enforceCaptionForSourceMedia,
+            recentPosts,
+            profileId,
+          );
+          result = null;
+          logger.info(
+            `PostGenerator: similarity detected, switched source to ${leadMediaCandidate.channel} post=${leadMediaCandidate.telegramPostId}`,
+          );
+        }
+      }
+
       if (validationResult.valid) {
         logger.info(`PostGenerator: post type "${type}" passed validation (attempt ${attempts + 1})`);
         break;
@@ -160,6 +190,20 @@ class PostGenerator {
       _profileTitle: profile?.title || 'Default channel',
       _targetChannelId: profile?.telegramChannelId || '',
     };
+  }
+
+  _buildEffectiveRules(type, rulesContent, leadMediaCandidate, sourceContext) {
+    let effectiveRulesContent = rulesContent;
+
+    if (leadMediaCandidate) {
+      effectiveRulesContent += `\n\n## Source-first mode\n- Rewrite only the exact source post tied to the image.\n- Do not mix another story from the cluster.\n- Text and image must describe the same event.\n- Anchor keywords: ${JSON.stringify(sourceContext?.anchorKeywords || [])}`;
+    }
+
+    if (type === 'weekly') {
+      effectiveRulesContent += '\n\n## Weekly mode\n- Summarize the strongest events from the last 7 days.\n- Use 2-4 distinct events if enough data exists.\n- Do not turn one single event into a fake weekly overview.\n- If the input only has one real event, frame it as the main event of the week and keep the post compact.\n- Keep temporal sanity: if an item appeared for a holiday or was removed within 1-2 days, describe it as a short-lived event, not as a historic tragedy or permanent loss.\n- Do not invent permanence, collector panic, or long-term market meaning unless the source explicitly states it.';
+    }
+
+    return effectiveRulesContent;
   }
 
   _buildPrompt(
@@ -445,6 +489,11 @@ ${memoryPrompt}
       valid: issues.length === 0,
       issues: [...new Set(issues)],
     };
+  }
+
+  _hasSimilarityIssue(validationResult) {
+    return Array.isArray(validationResult?.issues) &&
+      validationResult.issues.some((issue) => String(issue || '').toLowerCase().includes('similarity='));
   }
 
   _buildSourceContext(leadMediaCandidate, clusters = []) {

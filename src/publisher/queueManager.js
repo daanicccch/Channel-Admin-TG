@@ -23,7 +23,7 @@ class QueueManager {
     return this.getAdminChatIds().map(String).includes(String(userId));
   }
 
-  addToQueue(post) {
+  addToQueue(post, options = {}) {
     this.idCounter += 1;
     const item = {
       id: this.idCounter,
@@ -36,10 +36,11 @@ class QueueManager {
       profileId: post._profileId || 'default',
       profileTitle: post._profileTitle || 'Default channel',
       targetChannelId: post._targetChannelId || config.telegram.channelId,
+      forceImmediatePublish: options.forceImmediatePublish === true,
     };
     this.queue.push(item);
     logger.info(`Post added to queue, id=${item.id}, profile=${item.profileId}`);
-    return item.id;
+    return item;
   }
 
   async processQueue() {
@@ -49,27 +50,29 @@ class QueueManager {
       return;
     }
 
-    const minIntervalMs = config.limits.minPostInterval * 60 * 1000;
-    try {
-      const lastPost = queryOne(
-        'SELECT published_at FROM posts WHERE published_at IS NOT NULL ORDER BY published_at DESC LIMIT 1'
-      );
-
-      if (lastPost && lastPost.published_at) {
-        const lastTime = new Date(lastPost.published_at + 'Z').getTime();
-        const elapsed = Date.now() - lastTime;
-        if (elapsed < minIntervalMs) {
-          const waitMin = Math.ceil((minIntervalMs - elapsed) / 60000);
-          logger.info(`Too early to publish, wait about ${waitMin} more min`);
-          return;
-        }
-      }
-    } catch (err) {
-      logger.warn(`Failed to check publish interval: ${err.message}`);
-    }
-
     for (const item of pending) {
       try {
+        if (!item.forceImmediatePublish) {
+          const minIntervalMs = config.limits.minPostInterval * 60 * 1000;
+          try {
+            const lastPost = queryOne(
+              'SELECT published_at FROM posts WHERE published_at IS NOT NULL ORDER BY published_at DESC LIMIT 1'
+            );
+
+            if (lastPost && lastPost.published_at) {
+              const lastTime = new Date(lastPost.published_at + 'Z').getTime();
+              const elapsed = Date.now() - lastTime;
+              if (elapsed < minIntervalMs) {
+                const waitMin = Math.ceil((minIntervalMs - elapsed) / 60000);
+                logger.info(`Too early to publish, wait about ${waitMin} more min`);
+                continue;
+              }
+            }
+          } catch (err) {
+            logger.warn(`Failed to check publish interval: ${err.message}`);
+          }
+        }
+
         if (config.modes.autoPublish && !config.modes.reviewMode) {
           if (!item.targetChannelId) {
             logger.error(`No target channel configured for profile=${item.profileId}`);

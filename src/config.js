@@ -63,6 +63,7 @@ const config = {
     morningHour: parseInt(process.env.MORNING_DIGEST_HOUR, 10) || 9,
     dayHour: parseInt(process.env.DAY_ANALYSIS_HOUR, 10) || 14,
     eveningHour: parseInt(process.env.EVENING_REVIEW_HOUR, 10) || 20,
+    checkIntervalMinutes: parseInt(process.env.CHANNEL_CHECK_INTERVAL_MINUTES, 10) || 10,
     timezone: process.env.TIMEZONE || 'Europe/Moscow',
   },
   modes: {
@@ -148,6 +149,19 @@ async function initDb() {
     )
   `);
 
+  db.run(`
+    CREATE TABLE IF NOT EXISTS channel_checks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      profile_id TEXT NOT NULL,
+      channel TEXT NOT NULL,
+      telegram_post_id INTEGER NOT NULL,
+      source_date DATETIME,
+      generated_post_id INTEGER,
+      status TEXT DEFAULT 'processed',
+      created_at DATETIME DEFAULT (datetime('now'))
+    )
+  `);
+
   const sourcePostsColumns = db.exec(`PRAGMA table_info(source_posts)`);
   const sourcePostsColumnNames = sourcePostsColumns.length > 0
     ? sourcePostsColumns[0].values.map((row) => row[1])
@@ -156,6 +170,11 @@ async function initDb() {
   const postsColumns = db.exec(`PRAGMA table_info(posts)`);
   const postsColumnNames = postsColumns.length > 0
     ? postsColumns[0].values.map((row) => row[1])
+    : [];
+
+  const channelChecksColumns = db.exec(`PRAGMA table_info(channel_checks)`);
+  const channelChecksColumnNames = channelChecksColumns.length > 0
+    ? channelChecksColumns[0].values.map((row) => row[1])
     : [];
 
   if (!postsColumnNames.includes('profile_id')) {
@@ -174,6 +193,22 @@ async function initDb() {
     db.run(`ALTER TABLE source_posts ADD COLUMN entities TEXT`);
   }
 
+  if (!channelChecksColumnNames.includes('source_date')) {
+    db.run(`ALTER TABLE channel_checks ADD COLUMN source_date DATETIME`);
+  }
+
+  if (!channelChecksColumnNames.includes('generated_post_id')) {
+    db.run(`ALTER TABLE channel_checks ADD COLUMN generated_post_id INTEGER`);
+  }
+
+  if (!channelChecksColumnNames.includes('status')) {
+    db.run(`ALTER TABLE channel_checks ADD COLUMN status TEXT DEFAULT 'processed'`);
+  }
+
+  if (!channelChecksColumnNames.includes('created_at')) {
+    db.run(`ALTER TABLE channel_checks ADD COLUMN created_at DATETIME DEFAULT (datetime('now'))`);
+  }
+
   db.run(`
     CREATE INDEX IF NOT EXISTS idx_source_posts_channel_post
     ON source_posts(profile_id, channel, telegram_post_id)
@@ -182,6 +217,16 @@ async function initDb() {
   db.run(`
     CREATE INDEX IF NOT EXISTS idx_source_posts_source_date
     ON source_posts(profile_id, source_date)
+  `);
+
+  db.run(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_checks_unique
+    ON channel_checks(profile_id, channel, telegram_post_id)
+  `);
+
+  db.run(`
+    CREATE INDEX IF NOT EXISTS idx_channel_checks_lookup
+    ON channel_checks(profile_id, channel, telegram_post_id)
   `);
 
   logger.info('SQLite database initialized');

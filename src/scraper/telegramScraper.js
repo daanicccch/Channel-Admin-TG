@@ -98,8 +98,15 @@ class TelegramScraper {
       `getMessages:${username}`
     );
 
-    const posts = [];
-    let downloadedMediaCount = 0;
+    const posts = await this._buildPostsFromMessages(messages, username, channelTitle, cutoffMs);
+
+    logger.info(`TelegramScraper: ${username} - получено ${posts.length} постов`);
+    return { channel: username, channelTitle, posts };
+  }
+
+  async _buildPostsFromMessages(messages, username, channelTitle, cutoffMs) {
+    const postsMap = new Map();
+    const orderedKeys = [];
 
     for (const msg of messages) {
       const messageDate = normalizeTelegramDate(msg.date);
@@ -107,15 +114,39 @@ class TelegramScraper {
         continue;
       }
 
-      const post = {
-        id: msg.id,
-        date: messageDate,
-        text: msg.message || '',
-        entities: serializeEntities(msg.entities || []),
-        views: msg.views || 0,
-        forwards: msg.forwards || 0,
-        reactions: null,
-      };
+      const groupedId = msg.groupedId ? String(msg.groupedId) : null;
+      const postKey = groupedId ? `group:${groupedId}` : `msg:${msg.id}`;
+
+      if (!postsMap.has(postKey)) {
+        postsMap.set(postKey, {
+          id: msg.id,
+          date: messageDate,
+          text: msg.message || '',
+          entities: serializeEntities(msg.entities || []),
+          views: msg.views || 0,
+          forwards: msg.forwards || 0,
+          reactions: null,
+          mediaPaths: [],
+          channel: username,
+          channelTitle,
+        });
+        orderedKeys.push(postKey);
+      }
+
+      const post = postsMap.get(postKey);
+
+      if (!post.text && msg.message) {
+        post.text = msg.message;
+        post.entities = serializeEntities(msg.entities || []);
+      }
+
+      if (messageDate > post.date) {
+        post.date = messageDate;
+        post.id = msg.id;
+      }
+
+      post.views = Math.max(Number(post.views) || 0, Number(msg.views) || 0);
+      post.forwards = Math.max(Number(post.forwards) || 0, Number(msg.forwards) || 0);
 
       if (msg.reactions && msg.reactions.results) {
         post.reactions = msg.reactions.results.map(r => ({
@@ -124,27 +155,90 @@ class TelegramScraper {
         }));
       }
 
-      if (msg.photo && downloadedMediaCount < MAX_MEDIA_PER_CHANNEL) {
+      const hasVisualMedia = Boolean(msg.photo);
+      if (hasVisualMedia && post.mediaPaths.length < MAX_MEDIA_PER_CHANNEL) {
         try {
           const mediaPath = await withTimeout(
             mediaSaver.downloadMedia(this.client, msg, username),
             MEDIA_TIMEOUT_MS,
             `downloadMedia:${username}/${msg.id}`
           );
-          if (mediaPath) {
-            post.mediaPath = mediaPath;
-            downloadedMediaCount++;
+          if (mediaPath && !post.mediaPaths.includes(mediaPath)) {
+            post.mediaPaths.push(mediaPath);
           }
         } catch (err) {
           logger.warn(`TelegramScraper: media skip ${username}/${msg.id} - ${err.message}`);
         }
       }
-
-      posts.push(post);
     }
 
-    logger.info(`TelegramScraper: ${username} - получено ${posts.length} постов`);
-    return { channel: username, channelTitle, posts };
+    return orderedKeys
+      .map((key) => {
+        const post = postsMap.get(key);
+        return {
+          ...post,
+          mediaPath: post.mediaPaths[0] || null,
+        };
+      })
+      .sort((left, right) => {
+        const leftTime = left.date instanceof Date ? left.date.getTime() : 0;
+        const rightTime = right.date instanceof Date ? right.date.getTime() : 0;
+        return rightTime - leftTime;
+      });
+  }
+
+  persistChannelPosts(result, options = {}) {
+    const profileId = options.profileId || 'default';
+    const username = result?.channel;
+    if (!username || !Array.isArray(result?.posts)) {
+      return;
+    }
+
+    for (const post of result.posts) {
+      const sourceDate = post.date instanceof Date && Number.isFinite(post.date.getTime())
+        ? post.date.toISOString().slice(0, 19).replace('T', ' ')
+        : null;
+      const storedMediaPaths = Array.isArray(post.mediaPaths) && post.mediaPaths.length > 0
+        ? JSON.stringify(post.mediaPaths)
+        : (post.mediaPath || null);
+      const existing = queryOne(
+        `SELECT id FROM source_posts WHERE profile_id = ? AND channel = ? AND telegram_post_id = ? ORDER BY id DESC LIMIT 1`,
+        [profileId, username, post.id],
+      );
+
+      if (existing && existing.id) {
+        runSql(
+          `UPDATE source_posts
+           SET text = ?, entities = ?, media_paths = ?, views = ?, reactions = ?, source_date = ?, scraped_at = datetime('now')
+           WHERE id = ?`,
+          [
+            post.text,
+            post.entities,
+            storedMediaPaths,
+            post.views,
+            post.reactions ? JSON.stringify(post.reactions) : null,
+            sourceDate,
+            existing.id,
+          ],
+        );
+      } else {
+        runSql(
+          `INSERT INTO source_posts (profile_id, channel, telegram_post_id, source_date, text, entities, media_paths, views, reactions)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            profileId,
+            username,
+            post.id,
+            sourceDate,
+            post.text,
+            post.entities,
+            storedMediaPaths,
+            post.views,
+            post.reactions ? JSON.stringify(post.reactions) : null,
+          ],
+        );
+      }
+    }
   }
 
   /**
@@ -189,49 +283,7 @@ class TelegramScraper {
           lookbackHours,
         });
         allResults.push(result);
-
-        for (const post of result.posts) {
-          const sourceDate = post.date instanceof Date && Number.isFinite(post.date.getTime())
-            ? post.date.toISOString().slice(0, 19).replace('T', ' ')
-            : null;
-          const existing = queryOne(
-            `SELECT id FROM source_posts WHERE profile_id = ? AND channel = ? AND telegram_post_id = ? ORDER BY id DESC LIMIT 1`,
-            [profileId, username, post.id],
-          );
-
-          if (existing && existing.id) {
-            runSql(
-              `UPDATE source_posts
-               SET text = ?, entities = ?, media_paths = ?, views = ?, reactions = ?, source_date = ?, scraped_at = datetime('now')
-               WHERE id = ?`,
-              [
-                post.text,
-                post.entities,
-                post.mediaPath || null,
-                post.views,
-                post.reactions ? JSON.stringify(post.reactions) : null,
-                sourceDate,
-                existing.id,
-              ],
-            );
-          } else {
-            runSql(
-              `INSERT INTO source_posts (profile_id, channel, telegram_post_id, source_date, text, entities, media_paths, views, reactions)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-              [
-                profileId,
-                username,
-                post.id,
-                sourceDate,
-                post.text,
-                post.entities,
-                post.mediaPath || null,
-                post.views,
-                post.reactions ? JSON.stringify(post.reactions) : null,
-              ],
-            );
-          }
-        }
+        this.persistChannelPosts(result, { profileId });
 
         const durationSec = ((Date.now() - startedAt) / 1000).toFixed(1);
         logger.info(`TelegramScraper: ${username} - сохранено в БД (${durationSec}s)`);

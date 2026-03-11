@@ -56,16 +56,42 @@ function buildOpening(text, maxWords = 12) {
 }
 
 function normalizeKeywordList(items = []) {
-  return [...new Set(
-    (Array.isArray(items) ? items : [])
-      .map((item) => String(item || '').toLowerCase().trim())
-      .filter((item) => item.length >= 3 && !MEMORY_STOP_WORDS.has(item))
-  )];
+  const expanded = [];
+
+  for (const rawItem of (Array.isArray(items) ? items : [])) {
+    const item = String(rawItem || '').toLowerCase().trim().replace(/^[$#]+/, '');
+    if (item.length < 3 || MEMORY_STOP_WORDS.has(item)) {
+      continue;
+    }
+
+    expanded.push(item);
+
+    // Many meme channels alternate between $BIAO and gBIAO-style tickers.
+    if (/^g[a-z0-9]{3,10}$/i.test(item)) {
+      expanded.push(item.slice(1));
+    }
+  }
+
+  return [...new Set(expanded)];
+}
+
+function extractEntityHintsFromText(text) {
+  const rawText = String(text || '');
+  const cashtags = [...rawText.matchAll(/[$#]([A-Za-z][A-Za-z0-9]{2,11})/g)].map((match) => match[1]);
+  const normalized = toVisibleText(rawText).toLowerCase();
+  const hints = [...cashtags];
+
+  if (/\beuipo\b/i.test(normalized)) hints.push('euipo');
+  if (/\btrademark\b|\bтоварн(ый|ого)\s+знак/i.test(normalized)) hints.push('trademark');
+  if (/\bip\b|\bip rights\b|ip-прав|интеллектуальн/i.test(normalized)) hints.push('ip_rights');
+
+  return hints;
 }
 
 function detectEventType(text) {
   const normalized = toVisibleText(text).toLowerCase();
   const patterns = [
+    { type: 'ip_rights', regex: /\b(euipo|trademark|товарн(ый|ого)\s+знак|ip rights|ip-права|интеллектуальн)\b/i },
     { type: 'concepts_closed', regex: /\b(закрыли темы|закрыли концепты|сбор идей закрыт|прием концептов закрыт|темы закрыты|concepts closed|topics closed)\b/i },
     { type: 'upgrade_signal', regex: /\b(апгрейд|апгрейды|улучшени[яй]|обновлени[яй]|редизайн|анимации|эффекты)\b/i },
     { type: 'trade', regex: /\b(обмен|обменяли|сделка|трейд|trade)\b/i },
@@ -87,9 +113,12 @@ function buildEventFingerprint(input = {}, profileId = 'default') {
   return {
     eventType: input.eventType || detectEventType(text),
     entities: normalizeKeywordList(
-      input.entities && input.entities.length > 0
-        ? input.entities
-        : tokenize(text, profileId).slice(0, 12),
+      [
+        ...((input.entities && input.entities.length > 0)
+          ? input.entities
+          : tokenize(text, profileId).slice(0, 12)),
+        ...extractEntityHintsFromText(text),
+      ]
     ),
     topic: String(input.topic || '').trim(),
   };
@@ -114,6 +143,13 @@ function eventFingerprintsMatch(currentFingerprint, previousFingerprint) {
   }
 
   if (intersection.length >= 2 || overlap >= 0.34) {
+    return { score: 0.85 + Math.min(overlap, 0.1), overlap };
+  }
+
+  if (
+    currentFingerprint.eventType === 'ip_rights' &&
+    intersection.length >= 1
+  ) {
     return { score: 0.85 + Math.min(overlap, 0.1), overlap };
   }
 

@@ -3,28 +3,21 @@ const { config } = require('../config');
 const logger = require('../utils/logger');
 
 class Scheduler {
-  /**
-   * @param {function(string): Promise<void>} runPipeline — колбэк, вызываемый по расписанию с типом поста
-   */
-  constructor(runPipeline) {
+  constructor(runPipeline, runChannelChecks = null) {
     this.runPipeline = runPipeline;
+    this.runChannelChecks = runChannelChecks;
     this.tasks = [];
   }
 
-  /**
-   * Запускает все cron-задачи
-   */
   start() {
     const tz = config.schedule.timezone;
-    const { morningHour, dayHour, eveningHour } = config.schedule;
+    const { morningHour, dayHour, eveningHour, checkIntervalMinutes } = config.schedule;
 
-    // Случайный сдвиг 0-15 минут для каждого задания
     const morningMin = Math.floor(Math.random() * 16);
     const dayMin = Math.floor(Math.random() * 16);
     const eveningMin = Math.floor(Math.random() * 16);
     const weeklyMin = Math.floor(Math.random() * 16);
 
-    // Утренний дайджест
     const morningCron = `${morningMin} ${morningHour} * * *`;
     const morningTask = cron.schedule(
       morningCron,
@@ -41,7 +34,6 @@ class Scheduler {
     this.tasks.push(morningTask);
     logger.info(`Утренний дайджест: ${morningCron} (${tz})`);
 
-    // Дневная аналитика
     const dayCron = `${dayMin} ${dayHour} * * *`;
     const dayTask = cron.schedule(
       dayCron,
@@ -58,7 +50,6 @@ class Scheduler {
     this.tasks.push(dayTask);
     logger.info(`Дневная аналитика: ${dayCron} (${tz})`);
 
-    // Вечерний обзор
     const eveningCron = `${eveningMin} ${eveningHour} * * *`;
     const eveningTask = cron.schedule(
       eveningCron,
@@ -75,7 +66,6 @@ class Scheduler {
     this.tasks.push(eveningTask);
     logger.info(`Вечерний обзор: ${eveningCron} (${tz})`);
 
-    // Еженедельный дайджест (воскресенье 12:xx)
     const weeklyCron = `${weeklyMin} 12 * * 0`;
     const weeklyTask = cron.schedule(
       weeklyCron,
@@ -92,12 +82,28 @@ class Scheduler {
     this.tasks.push(weeklyTask);
     logger.info(`Еженедельный дайджест: ${weeklyCron} (${tz})`);
 
+    if (typeof this.runChannelChecks === 'function') {
+      const safeInterval = Math.max(1, Number(checkIntervalMinutes) || 10);
+      const checksCron = `*/${safeInterval} * * * *`;
+      const checksTask = cron.schedule(
+        checksCron,
+        async () => {
+          logger.info('Запуск быстрой проверки is_check-каналов');
+          try {
+            await this.runChannelChecks();
+          } catch (err) {
+            logger.error(`Ошибка быстрой проверки каналов: ${err.message}`);
+          }
+        },
+        { timezone: tz },
+      );
+      this.tasks.push(checksTask);
+      logger.info(`Быстрая проверка is_check-каналов: ${checksCron} (${tz})`);
+    }
+
     logger.info(`Планировщик запущен: ${this.tasks.length} задач`);
   }
 
-  /**
-   * Останавливает и уничтожает все cron-задачи
-   */
   stop() {
     for (const task of this.tasks) {
       task.stop();
