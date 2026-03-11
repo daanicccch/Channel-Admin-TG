@@ -1,0 +1,33 @@
+{
+  "channels": [
+    {
+      "username": "lh_crypto1",
+      "name": "LH Crypto",
+      "priority": "high",
+      "language": "ru",
+      "category": "telegram_gifts",
+      "scrape_interval_minutes": 15
+    },
+    {
+      "username": "gift_newstg",
+      "name": "Gift News",
+      "priority": "high",
+      "language": "ru",
+      "category": "telegram_gifts",
+      "scrape_interval_minutes": 10
+    },
+    {
+      "username": "giftsider",
+      "name": "GiftSider",
+      "priority": "high",
+      "language": "ru",
+      "category": "telegram_gifts",
+      "scrape_interval_minutes": 10
+    }
+  ],
+  "settings": {
+    "max_posts_per_channel": 50,
+    "lookback_hours": 24,
+    "min_views_threshold": 100
+  }
+}

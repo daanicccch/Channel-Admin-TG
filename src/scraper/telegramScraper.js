@@ -1,18 +1,61 @@
-const { TelegramClient } = require('telegram');
+﻿const { TelegramClient } = require('telegram');
 const { StringSession } = require('telegram/sessions');
-const { Api } = require('telegram/tl');
 const updates = require('telegram/client/updates');
 const { config } = require('../config');
 const { runSql } = require('../utils/dbHelpers');
 const rateLimiter = require('../utils/rateLimiter');
+const { queryOne } = require('../utils/dbHelpers');
 const logger = require('../utils/logger');
 const mediaSaver = require('./mediaSaver');
 const fs = require('fs');
 const path = require('path');
 
-// Патч: GramJS вызывает _updateLoop(client) как standalone функцию из модуля updates.
-// Для скрейпинга ping/update loop не нужен — он только кидает TIMEOUT ошибки.
+// Patch GramJS update loop: for scraping we do not need updates/ping loop.
 updates._updateLoop = async function () {};
+
+const ENTITY_TIMEOUT_MS = parseInt(process.env.TG_ENTITY_TIMEOUT_MS || '15000', 10);
+const MESSAGES_TIMEOUT_MS = parseInt(process.env.TG_MESSAGES_TIMEOUT_MS || '30000', 10);
+const MEDIA_TIMEOUT_MS = parseInt(process.env.TG_MEDIA_TIMEOUT_MS || '12000', 10);
+const MAX_MEDIA_PER_CHANNEL = parseInt(process.env.TG_MAX_MEDIA_PER_CHANNEL || '8', 10);
+
+function normalizeTelegramDate(value) {
+  if (value instanceof Date) return value;
+  if (typeof value === 'number') {
+    const timestampMs = value < 1e12 ? value * 1000 : value;
+    return new Date(timestampMs);
+  }
+  if (typeof value === 'string' && /^\d+$/.test(value)) {
+    const parsed = Number(value);
+    const timestampMs = parsed < 1e12 ? parsed * 1000 : parsed;
+    return new Date(timestampMs);
+  }
+  return new Date(value);
+}
+
+function serializeEntities(entities = []) {
+  if (!Array.isArray(entities) || entities.length === 0) {
+    return null;
+  }
+
+  const normalized = entities.map((entity) => ({
+    type: entity.className || entity.constructor?.name || '',
+    offset: Number(entity.offset) || 0,
+    length: Number(entity.length) || 0,
+    documentId: entity.documentId ? String(entity.documentId) : null,
+    url: entity.url || null,
+  }));
+
+  return JSON.stringify(normalized);
+}
+
+function withTimeout(promise, timeoutMs, label) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      setTimeout(() => reject(new Error(`timeout: ${label} (${timeoutMs}ms)`)), timeoutMs);
+    }),
+  ]);
+}
 
 class TelegramScraper {
   constructor() {
@@ -33,30 +76,47 @@ class TelegramScraper {
 
   /**
    * Scrape messages from a single channel.
-   * @param {string} username — channel username (without @)
+   * @param {string} username - channel username (without @)
    * @param {object} options
-   * @param {number} options.limit — max messages to fetch (default 50)
-   * @returns {object} — { channel, channelTitle, posts: [...] }
+   * @param {number} options.limit - max messages to fetch (default 50)
+   * @returns {object} - { channel, channelTitle, posts: [...] }
    */
   async scrapeChannel(username, options = {}) {
     const limit = options.limit || 50;
-    const entity = await this.client.getEntity(username);
+    const lookbackHours = options.lookbackHours || config.limits.lookbackHours || 24;
+    const cutoffMs = Date.now() - (lookbackHours * 60 * 60 * 1000);
+    const entity = await withTimeout(
+      this.client.getEntity(username),
+      ENTITY_TIMEOUT_MS,
+      `getEntity:${username}`
+    );
     const channelTitle = entity.title || username;
 
-    const messages = await this.client.getMessages(entity, { limit });
+    const messages = await withTimeout(
+      this.client.getMessages(entity, { limit }),
+      MESSAGES_TIMEOUT_MS,
+      `getMessages:${username}`
+    );
 
     const posts = [];
+    let downloadedMediaCount = 0;
+
     for (const msg of messages) {
+      const messageDate = normalizeTelegramDate(msg.date);
+      if (Number.isFinite(messageDate.getTime()) && messageDate.getTime() < cutoffMs) {
+        continue;
+      }
+
       const post = {
         id: msg.id,
-        date: msg.date,
+        date: messageDate,
         text: msg.message || '',
+        entities: serializeEntities(msg.entities || []),
         views: msg.views || 0,
         forwards: msg.forwards || 0,
         reactions: null,
       };
 
-      // Extract reactions if available
       if (msg.reactions && msg.reactions.results) {
         post.reactions = msg.reactions.results.map(r => ({
           emoji: r.reaction.emoticon || r.reaction.documentId || '?',
@@ -64,26 +124,37 @@ class TelegramScraper {
         }));
       }
 
-      // Download photo if present
-      if (msg.photo) {
-        const mediaPath = await mediaSaver.downloadMedia(this.client, msg, username);
-        if (mediaPath) {
-          post.mediaPath = mediaPath;
+      if (msg.photo && downloadedMediaCount < MAX_MEDIA_PER_CHANNEL) {
+        try {
+          const mediaPath = await withTimeout(
+            mediaSaver.downloadMedia(this.client, msg, username),
+            MEDIA_TIMEOUT_MS,
+            `downloadMedia:${username}/${msg.id}`
+          );
+          if (mediaPath) {
+            post.mediaPath = mediaPath;
+            downloadedMediaCount++;
+          }
+        } catch (err) {
+          logger.warn(`TelegramScraper: media skip ${username}/${msg.id} - ${err.message}`);
         }
       }
 
       posts.push(post);
     }
 
-    logger.info(`TelegramScraper: ${username} — получено ${posts.length} постов`);
+    logger.info(`TelegramScraper: ${username} - получено ${posts.length} постов`);
     return { channel: username, channelTitle, posts };
   }
 
   /**
    * Scrape multiple channels. Saves results to source_posts table.
-   * @param {string[]} [channelsList] — list of channel usernames. If not provided, reads from data/channels.json
+   * @param {string[]} [channelsList] - list of channel usernames. If not provided, reads from data/channels.json
    */
-  async scrapeAll(channelsList) {
+  async scrapeAll(channelsList, options = {}) {
+    const profileId = options.profileId || 'default';
+    const lookbackHours = options.lookbackHours || config.limits.lookbackHours;
+    const limitOverride = Number.isFinite(Number(options.limitOverride)) ? Number(options.limitOverride) : null;
     let channels = channelsList;
 
     if (!channels) {
@@ -91,7 +162,6 @@ class TelegramScraper {
       try {
         const raw = fs.readFileSync(channelsFile, 'utf-8');
         const parsed = JSON.parse(raw);
-        // channels.json имеет формат { channels: [...], settings: {...} }
         channels = parsed.channels || parsed;
       } catch (err) {
         logger.error(`TelegramScraper: не удалось прочитать channels.json: ${err.message}`);
@@ -102,7 +172,6 @@ class TelegramScraper {
     const allResults = [];
 
     for (const channelEntry of channels) {
-      // channelEntry может быть строкой ("username") или объектом ({ username, ... })
       const username = typeof channelEntry === 'string' ? channelEntry : channelEntry.username;
       if (!username) {
         logger.warn('TelegramScraper: пропущен канал без username');
@@ -110,31 +179,64 @@ class TelegramScraper {
       }
 
       try {
+        logger.info(`TelegramScraper: start ${username}`);
         await rateLimiter.waitForSlot('telegram_scrape');
-        const limit = (typeof channelEntry === 'object' && channelEntry.max_posts) || 50;
-        const result = await this.scrapeChannel(username, { limit });
+        const limit = limitOverride || ((typeof channelEntry === 'object' && channelEntry.max_posts) || 50);
+        const startedAt = Date.now();
+
+        const result = await this.scrapeChannel(username, {
+          limit,
+          lookbackHours,
+        });
         allResults.push(result);
 
-        // Save each post to database
         for (const post of result.posts) {
-          runSql(
-            `INSERT INTO source_posts (channel, telegram_post_id, text, media_paths, views, reactions)
-             VALUES (?, ?, ?, ?, ?, ?)`,
-            [
-              username,
-              post.id,
-              post.text,
-              post.mediaPath || null,
-              post.views,
-              post.reactions ? JSON.stringify(post.reactions) : null,
-            ]
+          const sourceDate = post.date instanceof Date && Number.isFinite(post.date.getTime())
+            ? post.date.toISOString().slice(0, 19).replace('T', ' ')
+            : null;
+          const existing = queryOne(
+            `SELECT id FROM source_posts WHERE profile_id = ? AND channel = ? AND telegram_post_id = ? ORDER BY id DESC LIMIT 1`,
+            [profileId, username, post.id],
           );
+
+          if (existing && existing.id) {
+            runSql(
+              `UPDATE source_posts
+               SET text = ?, entities = ?, media_paths = ?, views = ?, reactions = ?, source_date = ?, scraped_at = datetime('now')
+               WHERE id = ?`,
+              [
+                post.text,
+                post.entities,
+                post.mediaPath || null,
+                post.views,
+                post.reactions ? JSON.stringify(post.reactions) : null,
+                sourceDate,
+                existing.id,
+              ],
+            );
+          } else {
+            runSql(
+              `INSERT INTO source_posts (profile_id, channel, telegram_post_id, source_date, text, entities, media_paths, views, reactions)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              [
+                profileId,
+                username,
+                post.id,
+                sourceDate,
+                post.text,
+                post.entities,
+                post.mediaPath || null,
+                post.views,
+                post.reactions ? JSON.stringify(post.reactions) : null,
+              ],
+            );
+          }
         }
 
-        logger.info(`TelegramScraper: ${username} — сохранено в БД`);
+        const durationSec = ((Date.now() - startedAt) / 1000).toFixed(1);
+        logger.info(`TelegramScraper: ${username} - сохранено в БД (${durationSec}s)`);
       } catch (err) {
         logger.error(`TelegramScraper: ошибка при скрапинге ${username}: ${err.message}`);
-        // Continue to next channel
       }
     }
 
@@ -146,7 +248,6 @@ class TelegramScraper {
       try {
         await this.client.disconnect();
       } catch (err) {
-        // Игнорируем ошибки при отключении (TIMEOUT от update loop)
         logger.debug(`TelegramScraper disconnect: ${err.message}`);
       }
       this.client = null;

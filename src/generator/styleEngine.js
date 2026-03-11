@@ -9,6 +9,10 @@ const BANNED_PHRASES = [
   'как мы все знаем',
   'безусловно',
   'резюмируя',
+  'пантеон легенд',
+  'символ упущенных возможностей',
+  'машина для печатания денег',
+  'золотой билет',
   'guaranteed',
   'to the moon',
 ];
@@ -16,78 +20,138 @@ const BANNED_PHRASES = [
 const BANNED_STARTS = ['Друзья', 'Итак', 'Добрый день'];
 
 const POST_TYPE_LIMITS = {
-  digest: { min: 800, max: 1500 },
+  digest: { min: 650, max: 950 },
   analysis: { min: 1500, max: 3000 },
-  alert: { min: 300, max: 800 },
-  weekly: { min: 2000, max: 4000 },
+  alert: { min: 250, max: 700 },
+  weekly: { max: 1400 },
 };
 
-// Regex to match emoji characters (covers most common ranges)
 const EMOJI_REGEX = /[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F1E0}-\u{1F1FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{FE00}-\u{FE0F}\u{1F900}-\u{1F9FF}\u{1FA00}-\u{1FA6F}\u{1FA70}-\u{1FAFF}\u{200D}\u{2B50}\u{23CF}\u{23E9}-\u{23F3}\u{23F8}-\u{23FA}\u{25AA}-\u{25AB}\u{25B6}\u{25C0}\u{25FB}-\u{25FE}]/gu;
 
-let _rulesCache = null;
-let _templatesCache = null;
+const AI_PATTERN_RULES = [
+  {
+    pattern: /\b(является свидетельством|знаменует собой|подчеркивает важность|подчёркивает важность)\b/i,
+    issue: 'Есть пафосная AI-формулировка, которая раздувает значимость факта',
+  },
+  {
+    pattern: /\b(играет ключевую роль|поворотный момент|более широкие тенденции)\b/i,
+    issue: 'Есть шаблонный вывод вместо конкретного наблюдения',
+  },
+  {
+    pattern: /\b(широко освещал(?:ся|ась|ось)|получил признание экспертов|независимые источники подтверждают)\b/i,
+    issue: 'Есть размытая апелляция к известности или авторитетам без конкретики',
+  },
+  {
+    pattern: /\b(уникальн(?:ый|ая|ое|ые)|революционн(?:ый|ая|ое|ые)|инновационн(?:ый|ая|ое|ые)|не имеющ(?:ий|ая|ее|ие) аналогов)\b/i,
+    issue: 'Есть рекламный промо-язык, который делает текст искусственным',
+  },
+  {
+    pattern: /\b(эксперты считают|по мнению специалистов|исследователи отмечают|наблюдатели полагают)\b/i,
+    issue: 'Есть размытая атрибуция без указания конкретного источника',
+  },
+  {
+    pattern: /\b(несмотря на успехи|сталкивается с рядом вызовов|будущее выглядит многообещающим|перспективы развития)\b/i,
+    issue: 'Есть шаблонный блок про вызовы или перспективы без фактуры',
+  },
+  {
+    pattern: /\b(осуществляет деятельность|на основании|в соответствии с|в рамках|представляет собой)\b/i,
+    issue: 'Есть канцелярит, который убивает живой тон',
+  },
+  {
+    pattern: /\b(в контексте|кроме того|более того|таким образом)\b/i,
+    issue: 'Есть типичная связка AI-текста вместо прямой подачи мысли',
+  },
+  {
+    pattern: /\b(не только .*?, но и|это не просто .*?, а)\b/i,
+    issue: 'Есть риторическая конструкция, которая звучит шаблонно',
+  },
+  {
+    pattern: /\b(пантеон легенд|символ упущенных возможностей|удар для коллекционеров|полная зачистка|получить уже невозможно)\b/i,
+    issue: 'Есть избыточная драматизация или ложная финальность для обычного события',
+  },
+];
 
-const rulesPath = path.join(config.paths.rules, 'POST_RULES.md');
-const templatesPath = path.join(config.paths.rules, 'TEMPLATES.md');
+const DEFAULT_RULES_PATH = path.join(config.paths.rules, 'POST_RULES.md');
+const DEFAULT_TEMPLATES_PATH = path.join(config.paths.rules, 'TEMPLATES.md');
+const DEFAULT_HUMANIZER_PATH = path.join(__dirname, 'HUMANIZER_RULES.md');
+const fileCache = new Map();
+const watchedFiles = new Set();
 
-// Set up file watchers for hot-reload
-function _setupWatcher(filePath, clearFn) {
+function watchFile(filePath) {
+  if (!filePath || watchedFiles.has(filePath)) return;
+
   try {
     fs.watchFile(filePath, { interval: 5000 }, (curr, prev) => {
-      if (curr.mtime !== prev.mtime) {
-        logger.info(`styleEngine: файл ${path.basename(filePath)} изменён, сбрасываем кеш`);
-        clearFn();
+      if (curr.mtimeMs !== prev.mtimeMs) {
+        fileCache.delete(filePath);
+        logger.info(`styleEngine: file changed ${path.basename(filePath)}, cache dropped`);
       }
     });
+    watchedFiles.add(filePath);
   } catch (err) {
-    logger.debug(`styleEngine: не удалось установить watcher для ${filePath}: ${err.message}`);
+    logger.debug(`styleEngine: watcher skipped for ${filePath}: ${err.message}`);
   }
 }
 
-_setupWatcher(rulesPath, () => { _rulesCache = null; });
-_setupWatcher(templatesPath, () => { _templatesCache = null; });
+function loadFile(filePath, label) {
+  if (!filePath) return '';
+  if (fileCache.has(filePath)) {
+    return fileCache.get(filePath);
+  }
 
-/**
- * Load POST_RULES.md content, with caching and hot-reload.
- * @returns {string} rules content or empty string if file not found
- */
-function loadRules() {
-  if (_rulesCache !== null) return _rulesCache;
   try {
-    _rulesCache = fs.readFileSync(rulesPath, 'utf-8');
-    logger.debug('styleEngine: POST_RULES.md загружен');
-    return _rulesCache;
+    const content = fs.readFileSync(filePath, 'utf-8');
+    fileCache.set(filePath, content);
+    watchFile(filePath);
+    logger.debug(`styleEngine: loaded ${label} from ${path.basename(filePath)}`);
+    return content;
   } catch (err) {
-    logger.warn(`styleEngine: не удалось загрузить POST_RULES.md — ${err.message}`);
-    _rulesCache = '';
-    return _rulesCache;
+    logger.warn(`styleEngine: failed to load ${label} from ${filePath}: ${err.message}`);
+    fileCache.set(filePath, '');
+    return '';
   }
 }
 
-/**
- * Load TEMPLATES.md content, with caching and hot-reload.
- * @returns {string} templates content or empty string if file not found
- */
-function loadTemplates() {
-  if (_templatesCache !== null) return _templatesCache;
-  try {
-    _templatesCache = fs.readFileSync(templatesPath, 'utf-8');
-    logger.debug('styleEngine: TEMPLATES.md загружен');
-    return _templatesCache;
-  } catch (err) {
-    logger.warn(`styleEngine: не удалось загрузить TEMPLATES.md — ${err.message}`);
-    _templatesCache = '';
-    return _templatesCache;
-  }
+function loadRules(profile = null) {
+  return loadFile(profile?.rulesPath || DEFAULT_RULES_PATH, 'POST_RULES');
 }
 
-/**
- * Validate a post's text against style rules.
- * @param {string} text - post text
- * @param {string} postType - one of: digest, analysis, alert, weekly
- * @returns {{ valid: boolean, issues: string[] }}
- */
+function loadTemplates(profile = null) {
+  return loadFile(profile?.templatesPath || DEFAULT_TEMPLATES_PATH, 'TEMPLATES');
+}
+
+function loadHumanizerRules(profile = null) {
+  return loadFile(profile?.humanizerPath || DEFAULT_HUMANIZER_PATH, 'HUMANIZER_RULES');
+}
+
+function findAiPatternIssues(text) {
+  const issues = [];
+
+  for (const rule of AI_PATTERN_RULES) {
+    if (rule.pattern.test(text)) {
+      issues.push(rule.issue);
+    }
+  }
+
+  return issues;
+}
+
+function findFormattingIssues(text) {
+  const issues = [];
+  const pairedValueBlocks = text.match(/(?:^|\n)(?:<b>)?(?:Офферы|Факт сделки|Потеря|Итог|Продажа|Сделка)(?::(?:<\/b>)?)?\s*\n(?:[~\d][^\n]{0,40}\n){2,}/gim) || [];
+
+  if (pairedValueBlocks.length > 0) {
+    issues.push('Числовой блок оформлен слишком сухо: связанные значения лучше держать в одной строке, например `100 000 ⭐️ (~1 400 TON)`');
+  }
+
+  const nakedNumberLines = text.match(/(?:^|\n)[~]?\$?\d[\d\s.,]*\s*(?:⭐️|⭐|TON|\$|USD)?\s*\n[~]?\$?\d[\d\s.,]*\s*(?:⭐️|⭐|TON|\$|USD)/gim) || [];
+  if (nakedNumberLines.length > 0) {
+    issues.push('Есть две подряд строки с голыми числами без нормальной склейки или подводки');
+  }
+
+  return issues;
+}
+
 function validatePost(text, postType) {
   const issues = [];
 
@@ -95,18 +159,16 @@ function validatePost(text, postType) {
     return { valid: false, issues: ['Пост пустой или не является строкой'] };
   }
 
-  // Check length limits
   const limits = POST_TYPE_LIMITS[postType];
   if (limits) {
-    if (text.length < limits.min) {
+    if (Number.isFinite(limits.min) && limits.min > 0 && text.length < limits.min) {
       issues.push(`Длина поста (${text.length}) меньше минимума (${limits.min}) для типа "${postType}"`);
     }
-    if (text.length > limits.max) {
+    if (Number.isFinite(limits.max) && text.length > limits.max) {
       issues.push(`Длина поста (${text.length}) превышает максимум (${limits.max}) для типа "${postType}"`);
     }
   }
 
-  // Check banned phrases
   const lowerText = text.toLowerCase();
   for (const phrase of BANNED_PHRASES) {
     if (lowerText.includes(phrase.toLowerCase())) {
@@ -114,7 +176,6 @@ function validatePost(text, postType) {
     }
   }
 
-  // Check banned start phrases
   const trimmedText = text.trimStart();
   for (const start of BANNED_STARTS) {
     if (trimmedText.startsWith(start)) {
@@ -122,23 +183,25 @@ function validatePost(text, postType) {
     }
   }
 
-  // Check emoji count — лимиты зависят от типа поста
-  const emojiMatches = text.match(EMOJI_REGEX) || [];
-  const emojiCount = emojiMatches.length;
-  const emojiMax = (postType === 'digest' || postType === 'weekly') ? 15 : 10;
-  if (emojiCount < 2) {
-    issues.push(`Слишком мало эмодзи: ${emojiCount} (нужно минимум 2)`);
+  const emojiCount = (text.match(EMOJI_REGEX) || []).length;
+  if (emojiCount < 1) {
+    issues.push(`Слишком мало эмодзи: ${emojiCount} (нужен минимум 1)`);
   }
-  if (emojiCount > emojiMax) {
-    issues.push(`Слишком много эмодзи: ${emojiCount} (максимум ${emojiMax})`);
+  if (emojiCount > 2) {
+    issues.push(`Слишком много эмодзи: ${emojiCount} (максимум 2)`);
   }
 
-  return { valid: issues.length === 0, issues };
+  issues.push(...findAiPatternIssues(text));
+  issues.push(...findFormattingIssues(text));
+
+  const uniqueIssues = [...new Set(issues)];
+  return { valid: uniqueIssues.length === 0, issues: uniqueIssues };
 }
 
 module.exports = {
   loadRules,
   loadTemplates,
+  loadHumanizerRules,
   validatePost,
   POST_TYPE_LIMITS,
 };

@@ -1,0 +1,10 @@
+{
+  "id": "Sol",
+  "title": "Sol channel",
+  "telegram_channel_id": "-1003844307588",
+  "rules_path": "POST_RULES.md",
+  "templates_path": "TEMPLATES.md",
+  "humanizer_path": "HUMANIZER_RULES.md",
+  "source_channels_path": "channels.json",
+  "web_sources_path": "web_sources.json"
+}

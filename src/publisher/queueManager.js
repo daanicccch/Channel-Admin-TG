@@ -1,43 +1,54 @@
 const { config } = require('../config');
 const { queryOne } = require('../utils/dbHelpers');
 const logger = require('../utils/logger');
+const mediaHandler = require('../generator/mediaHandler');
 
 class QueueManager {
-  constructor(telegramPublisher) {
+  constructor(telegramPublisher, generateFromAnalysis = null) {
     this.publisher = telegramPublisher;
+    this.generateFromAnalysis = generateFromAnalysis;
     this.queue = [];
-    this._idCounter = 0;
+    this.idCounter = 0;
   }
 
-  /**
-   * Добавляет пост в очередь
-   * @param {object} post — { text, media?, keyboard? }
-   * @returns {number} id элемента в очереди
-   */
+  getAdminChatIds() {
+    const ids = Array.isArray(config.telegram.adminChatIds)
+      ? config.telegram.adminChatIds.filter(Boolean)
+      : [];
+    if (ids.length > 0) return ids;
+    return config.telegram.adminChatId ? [config.telegram.adminChatId] : [];
+  }
+
+  hasAdminAccess(userId) {
+    return this.getAdminChatIds().map(String).includes(String(userId));
+  }
+
   addToQueue(post) {
-    this._idCounter += 1;
+    this.idCounter += 1;
     const item = {
-      id: this._idCounter,
+      id: this.idCounter,
       post,
+      type: post.postType || 'digest',
       status: 'pending',
       createdAt: new Date(),
+      reviewRefs: [],
+      sourceHistory: post._leadMediaCandidate?.sourceKey ? [post._leadMediaCandidate.sourceKey] : [],
+      profileId: post._profileId || 'default',
+      profileTitle: post._profileTitle || 'Default channel',
+      targetChannelId: post._targetChannelId || config.telegram.channelId,
     };
     this.queue.push(item);
-    logger.info(`Пост добавлен в очередь, id=${item.id}`);
+    logger.info(`Post added to queue, id=${item.id}, profile=${item.profileId}`);
     return item.id;
   }
 
-  /**
-   * Обрабатывает очередь: публикует или отправляет на ревью
-   */
   async processQueue() {
     const pending = this.queue.filter((item) => item.status === 'pending');
     if (pending.length === 0) {
-      logger.debug('Очередь пуста, нечего обрабатывать');
+      logger.debug('Queue is empty, nothing to process');
       return;
     }
 
-    // Проверяем минимальный интервал между постами
     const minIntervalMs = config.limits.minPostInterval * 60 * 1000;
     try {
       const lastPost = queryOne(
@@ -49,91 +60,163 @@ class QueueManager {
         const elapsed = Date.now() - lastTime;
         if (elapsed < minIntervalMs) {
           const waitMin = Math.ceil((minIntervalMs - elapsed) / 60000);
-          logger.info(`Слишком рано для публикации, подождите ещё ~${waitMin} мин.`);
+          logger.info(`Too early to publish, wait about ${waitMin} more min`);
           return;
         }
       }
     } catch (err) {
-      logger.warn(`Не удалось проверить интервал публикации: ${err.message}`);
+      logger.warn(`Failed to check publish interval: ${err.message}`);
     }
 
     for (const item of pending) {
       try {
         if (config.modes.autoPublish && !config.modes.reviewMode) {
-          // Публикуем напрямую
-          const channelId = config.telegram.channelId;
-          if (!channelId) {
-            logger.error('TELEGRAM_CHANNEL_ID не задан, невозможно опубликовать');
+          if (!item.targetChannelId) {
+            logger.error(`No target channel configured for profile=${item.profileId}`);
             return;
           }
-          await this.publisher.publish(item.post, channelId);
+          await this.publisher.publish(item.post, item.targetChannelId);
           item.status = 'published';
-          logger.info(`Пост ${item.id} опубликован автоматически`);
+          logger.info(`Post ${item.id} published automatically to ${item.targetChannelId}`);
         } else if (config.modes.reviewMode) {
-          // Отправляем на ревью админу
-          await this.publisher.sendToAdmin(item.post, item.id);
-          item.status = 'pending'; // остаётся pending до решения админа
-          logger.info(`Пост ${item.id} отправлен на ревью`);
+          item.reviewRefs = await this.publisher.sendToAdmin(item.post, item.id, {
+            header: `📝 Post for review • ${item.profileTitle}`,
+          });
+          item.status = 'pending';
+          logger.info(`Post ${item.id} sent for review`);
         } else {
-          logger.info(`Пост ${item.id} в очереди, autoPublish=false, reviewMode=false`);
+          logger.info(`Post ${item.id} remains in queue, autoPublish=false, reviewMode=false`);
         }
       } catch (err) {
-        logger.error(`Ошибка обработки поста ${item.id}: ${err.message}`);
+        logger.error(`Queue processing failed for post ${item.id}: ${err.message}`);
       }
     }
   }
 
-  /**
-   * Регистрирует callback-обработчики для кнопок Approve/Reject
-   * @param {import('telegraf').Telegraf} bot — экземпляр Telegraf
-   */
   setupAdminCallbacks(bot) {
     bot.action(/^approve_(\d+)/, async (ctx) => {
+      if (!this.hasAdminAccess(ctx.from.id)) {
+        await ctx.answerCbQuery('No access');
+        return;
+      }
+
       const postId = parseInt(ctx.match[1], 10);
       const item = this.queue.find((q) => q.id === postId);
 
       if (!item) {
-        await ctx.answerCbQuery('Пост не найден в очереди');
+        await ctx.answerCbQuery('Post not found');
+        return;
+      }
+      if (item.status !== 'pending') {
+        await ctx.answerCbQuery('Already processed');
         return;
       }
 
       try {
-        const channelId = config.telegram.channelId;
-        if (!channelId) {
-          await ctx.answerCbQuery('CHANNEL_ID не задан');
+        if (!item.targetChannelId) {
+          await ctx.answerCbQuery('No target channel configured');
           return;
         }
 
-        await this.publisher.publish(item.post, channelId);
+        await this.publisher.publish(item.post, item.targetChannelId);
         item.status = 'published';
-        await ctx.answerCbQuery('Опубликовано ✅');
-        await ctx.editMessageReplyMarkup(undefined);
-        logger.info(`Пост ${postId} одобрен и опубликован админом`);
+        await this.publisher.clearAdminReplyMarkups(item.reviewRefs);
+        await ctx.answerCbQuery('Published');
+        logger.info(`Post ${postId} approved and published by admin`);
       } catch (err) {
-        logger.error(`Ошибка публикации одобренного поста ${postId}: ${err.message}`);
-        await ctx.answerCbQuery('Ошибка публикации');
+        logger.error(`Approve publish error for post ${postId}: ${err.message}`);
+        await ctx.answerCbQuery('Publish error');
       }
     });
 
     bot.action(/^reject_(\d+)/, async (ctx) => {
+      if (!this.hasAdminAccess(ctx.from.id)) {
+        await ctx.answerCbQuery('No access');
+        return;
+      }
+
       const postId = parseInt(ctx.match[1], 10);
       const item = this.queue.find((q) => q.id === postId);
 
-      if (item) {
-        item.status = 'rejected';
-        logger.info(`Пост ${postId} отклонён админом`);
+      if (!item) {
+        await ctx.answerCbQuery('Post not found');
+        return;
+      }
+      if (item.status !== 'pending') {
+        await ctx.answerCbQuery('Already processed');
+        return;
       }
 
-      await ctx.answerCbQuery('Отклонено');
-      await ctx.editMessageReplyMarkup(undefined);
+      item.status = 'rejected';
+      await this.publisher.clearAdminReplyMarkups(item.reviewRefs);
+      logger.info(`Post ${postId} rejected by admin`);
+      await ctx.answerCbQuery('Rejected');
     });
 
-    logger.info('Admin callback-обработчики зарегистрированы');
+    bot.action(/^replace_source_(\d+)/, async (ctx) => {
+      if (!this.hasAdminAccess(ctx.from.id)) {
+        await ctx.answerCbQuery('No access');
+        return;
+      }
+
+      const postId = parseInt(ctx.match[1], 10);
+      const item = this.queue.find((q) => q.id === postId);
+
+      if (!item) {
+        await ctx.answerCbQuery('Post not found');
+        return;
+      }
+      if (item.status !== 'pending') {
+        await ctx.answerCbQuery('Already processed');
+        return;
+      }
+      if (!this.generateFromAnalysis) {
+        await ctx.answerCbQuery('Source replace unavailable');
+        return;
+      }
+
+      const analysisData = item.post?._analysisData;
+      if (!analysisData?.clusters) {
+        await ctx.answerCbQuery('No source context');
+        return;
+      }
+
+      const sourceOverride = mediaHandler.selectAlternativeLeadMediaPost(
+        analysisData.clusters,
+        item.sourceHistory || [],
+        item.post.text || '',
+        { profileId: item.profileId },
+      );
+
+      if (!sourceOverride) {
+        await ctx.answerCbQuery('No alternative source posts');
+        return;
+      }
+
+      await ctx.answerCbQuery('Replacing source');
+      await this.publisher.clearAdminReplyMarkups(item.reviewRefs);
+
+      try {
+        const newPost = await this.generateFromAnalysis(item.type, analysisData, {
+          leadMediaOverride: sourceOverride,
+          profileId: item.profileId,
+        });
+        item.post = newPost;
+        item.sourceHistory = newPost._leadMediaCandidate?.sourceKey
+          ? [...new Set([...(item.sourceHistory || []), sourceOverride.sourceKey, newPost._leadMediaCandidate.sourceKey])]
+          : [...new Set([...(item.sourceHistory || []), sourceOverride.sourceKey])];
+        item.reviewRefs = await this.publisher.sendToAdmin(item.post, item.id, {
+          header: `🖼 Updated preview • ${item.profileTitle}`,
+        });
+        logger.info(`Post ${postId}: source replaced with ${sourceOverride.channel}/${sourceOverride.telegramPostId}`);
+      } catch (err) {
+        logger.error(`Replace source error for queued post ${postId}: ${err.message}`);
+      }
+    });
+
+    logger.info('Admin callbacks registered');
   }
 
-  /**
-   * Возвращает статистику очереди
-   */
   getQueueStatus() {
     const counts = { pending: 0, approved: 0, published: 0, rejected: 0 };
     for (const item of this.queue) {

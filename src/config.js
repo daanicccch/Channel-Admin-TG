@@ -3,20 +3,44 @@ const fs = require('fs');
 require('dotenv').config({ path: path.resolve(__dirname, '..', '.env') });
 
 const logger = require('./utils/logger');
+const { loadGeminiKeys } = require('./ai/geminiKeyStore');
 
-// Валидация обязательных переменных
+function parseList(value) {
+  if (!value) return [];
+  return String(value)
+    .split(',')
+    .map(item => item.trim())
+    .filter(Boolean);
+}
+
 const required = ['TELEGRAM_BOT_TOKEN', 'TELEGRAM_API_ID', 'TELEGRAM_API_HASH'];
 for (const key of required) {
   if (!process.env[key]) {
-    console.error(`[CONFIG] Отсутствует обязательная переменная: ${key}`);
-    console.error('Скопируйте .env.example в .env и заполните значения');
+    console.error(`[CONFIG] Missing required env var: ${key}`);
+    console.error('Copy .env.example to .env and fill required values');
     process.exit(1);
   }
 }
 
-// Хотя бы один AI ключ обязателен
-if (!process.env.GEMINI_API_KEY && !process.env.DASHSCOPE_API_KEY) {
-  console.error('[CONFIG] Нужен хотя бы один AI ключ: GEMINI_API_KEY или DASHSCOPE_API_KEY');
+const paths = {
+  root: path.resolve(__dirname, '..'),
+  data: path.resolve(__dirname, '..', 'data'),
+  mediaCache: path.resolve(__dirname, '..', 'data', 'media_cache'),
+  rules: path.resolve(__dirname, '..', 'rules'),
+  logs: path.resolve(__dirname, '..', 'logs'),
+  db: path.resolve(__dirname, '..', 'data', 'bot.db'),
+  geminiKeys: path.resolve(__dirname, '..', 'data', 'gemini_keys.json'),
+};
+
+const geminiKeysFromArray = parseList(process.env.GEMINI_API_KEYS);
+const geminiEnvFallback = geminiKeysFromArray.length > 0
+  ? geminiKeysFromArray
+  : (process.env.GEMINI_API_KEY ? [process.env.GEMINI_API_KEY.trim()] : []);
+const geminiKeys = loadGeminiKeys(paths.geminiKeys, geminiEnvFallback);
+const adminChatIds = parseList(process.env.TELEGRAM_ADMIN_CHAT_ID);
+
+if (geminiKeys.length === 0) {
+  console.error('[CONFIG] At least one Gemini AI key is required: data/gemini_keys.json or GEMINI_API_KEY(S)');
   process.exit(1);
 }
 
@@ -24,17 +48,16 @@ const config = {
   telegram: {
     botToken: process.env.TELEGRAM_BOT_TOKEN,
     channelId: process.env.TELEGRAM_CHANNEL_ID || '',
-    adminChatId: process.env.TELEGRAM_ADMIN_CHAT_ID || '',
+    adminChatIds,
+    adminChatId: adminChatIds[0] || '',
     apiId: parseInt(process.env.TELEGRAM_API_ID, 10),
     apiHash: process.env.TELEGRAM_API_HASH,
     sessionString: process.env.TELEGRAM_SESSION_STRING || '',
   },
   ai: {
-    geminiKey: process.env.GEMINI_API_KEY || '',
+    geminiKeys,
+    geminiKey: geminiKeys[0] || '',
     geminiModel: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
-    dashscopeKey: process.env.DASHSCOPE_API_KEY || '',
-    qwenModel: process.env.QWEN_MODEL || 'qwen-plus',
-    qwenBaseUrl: process.env.QWEN_BASE_URL || 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1',
   },
   schedule: {
     morningHour: parseInt(process.env.MORNING_DIGEST_HOUR, 10) || 9,
@@ -52,30 +75,18 @@ const config = {
     lookbackHours: parseInt(process.env.LOOKBACK_HOURS, 10) || 24,
   },
   paths: {
-    root: path.resolve(__dirname, '..'),
-    data: path.resolve(__dirname, '..', 'data'),
-    mediaCache: path.resolve(__dirname, '..', 'data', 'media_cache'),
-    rules: path.resolve(__dirname, '..', 'rules'),
-    logs: path.resolve(__dirname, '..', 'logs'),
-    db: path.resolve(__dirname, '..', 'data', 'bot.db'),
+    ...paths,
   },
 };
 
-// sql.js wrapper — синхронный API поверх sql.js для совместимости
 let _db = null;
-let _dbReady = null;
 
-/**
- * Инициализирует БД (вызывать один раз при старте).
- * Возвращает promise.
- */
 async function initDb() {
   if (_db) return _db;
 
   const initSqlJs = require('sql.js');
   const SQL = await initSqlJs();
 
-  // Загрузить существующую БД или создать новую
   let db;
   if (fs.existsSync(config.paths.db)) {
     const buffer = fs.readFileSync(config.paths.db);
@@ -89,6 +100,7 @@ async function initDb() {
   db.run(`
     CREATE TABLE IF NOT EXISTS posts (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
+      profile_id TEXT,
       type TEXT NOT NULL,
       text TEXT NOT NULL,
       media_path TEXT,
@@ -102,9 +114,12 @@ async function initDb() {
   db.run(`
     CREATE TABLE IF NOT EXISTS source_posts (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
+      profile_id TEXT,
       channel TEXT NOT NULL,
       telegram_post_id INTEGER,
+      source_date DATETIME,
       text TEXT,
+      entities TEXT,
       media_paths TEXT,
       views INTEGER DEFAULT 0,
       reactions TEXT,
@@ -133,23 +148,54 @@ async function initDb() {
     )
   `);
 
-  logger.info('SQLite база данных инициализирована');
+  const sourcePostsColumns = db.exec(`PRAGMA table_info(source_posts)`);
+  const sourcePostsColumnNames = sourcePostsColumns.length > 0
+    ? sourcePostsColumns[0].values.map((row) => row[1])
+    : [];
+
+  const postsColumns = db.exec(`PRAGMA table_info(posts)`);
+  const postsColumnNames = postsColumns.length > 0
+    ? postsColumns[0].values.map((row) => row[1])
+    : [];
+
+  if (!postsColumnNames.includes('profile_id')) {
+    db.run(`ALTER TABLE posts ADD COLUMN profile_id TEXT`);
+  }
+
+  if (!sourcePostsColumnNames.includes('profile_id')) {
+    db.run(`ALTER TABLE source_posts ADD COLUMN profile_id TEXT`);
+  }
+
+  if (!sourcePostsColumnNames.includes('source_date')) {
+    db.run(`ALTER TABLE source_posts ADD COLUMN source_date DATETIME`);
+  }
+
+  if (!sourcePostsColumnNames.includes('entities')) {
+    db.run(`ALTER TABLE source_posts ADD COLUMN entities TEXT`);
+  }
+
+  db.run(`
+    CREATE INDEX IF NOT EXISTS idx_source_posts_channel_post
+    ON source_posts(profile_id, channel, telegram_post_id)
+  `);
+
+  db.run(`
+    CREATE INDEX IF NOT EXISTS idx_source_posts_source_date
+    ON source_posts(profile_id, source_date)
+  `);
+
+  logger.info('SQLite database initialized');
   _db = db;
   return db;
 }
 
-/**
- * Получить инициализированную БД (синхронно, если уже готова).
- * Для первого вызова используйте initDb().
- */
 function getDb() {
   if (!_db) {
-    throw new Error('БД не инициализирована. Вызовите await initDb() при старте.');
+    throw new Error('Database is not initialized. Call await initDb() on startup.');
   }
   return _db;
 }
 
-/** Сохранить БД на диск */
 function saveDb() {
   if (!_db) return;
   const data = _db.export();
@@ -157,7 +203,6 @@ function saveDb() {
   fs.writeFileSync(config.paths.db, buffer);
 }
 
-/** Закрыть и сохранить БД */
 function closeDb() {
   if (!_db) return;
   saveDb();

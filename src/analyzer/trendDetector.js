@@ -43,7 +43,7 @@ ${webText}
 Верни ТОЛЬКО JSON-массив трендов, отсортированный по significance (от большего к меньшему).`;
 
     try {
-      const result = await aiProvider.generateJSON(prompt);
+      const result = await aiProvider.generateJSON(prompt, { temperature: 0.15, maxTokens: 2048 });
       const trends = Array.isArray(result) ? result : (result.trends || []);
       trends.sort((a, b) => (b.significance || 0) - (a.significance || 0));
 

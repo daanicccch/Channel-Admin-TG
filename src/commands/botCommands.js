@@ -1,239 +1,470 @@
 const { config } = require('../config');
-const { queryOne, queryAll } = require('../utils/dbHelpers');
+const { queryOne } = require('../utils/dbHelpers');
 const logger = require('../utils/logger');
+const mediaHandler = require('../generator/mediaHandler');
+const { getTelegramEntityLength } = require('../generator/formatBuilder');
+const { getChannelProfiles, getChannelProfile } = require('../channelProfiles');
 
 const VALID_TYPES = ['digest', 'analysis', 'alert', 'weekly'];
-
-// Хранилище постов, ожидающих решения админа (id → { post, type })
 const pendingPosts = new Map();
-let _idCounter = 0;
+let idCounter = 0;
+const DEFAULT_MEDIA_COUNT = Math.max(0, Math.min(parseInt(process.env.TG_MAX_MEDIA_PER_POST || '1', 10), 1));
 
-/**
- * Middleware: пропускает только админа (TELEGRAM_ADMIN_CHAT_ID)
- */
+function getAdminChatIds() {
+  const ids = Array.isArray(config.telegram.adminChatIds)
+    ? config.telegram.adminChatIds.filter(Boolean)
+    : [];
+  if (ids.length > 0) return ids;
+  return config.telegram.adminChatId ? [config.telegram.adminChatId] : [];
+}
+
+function hasAdminAccess(userId) {
+  return getAdminChatIds().map(String).includes(String(userId));
+}
+
 function adminOnly(ctx, next) {
-  const adminId = config.telegram.adminChatId;
-  if (!adminId) {
-    return ctx.reply('TELEGRAM_ADMIN_CHAT_ID не задан в .env');
-  }
-  if (String(ctx.from.id) !== String(adminId)) {
-    return ctx.reply('⛔ Нет доступа');
-  }
+  const adminIds = getAdminChatIds();
+  if (adminIds.length === 0) return ctx.reply('TELEGRAM_ADMIN_CHAT_ID is not set in .env');
+  if (!hasAdminAccess(ctx.from.id)) return ctx.reply('No access');
   return next();
 }
 
-/**
- * Формирует inline-клавиатуру для preview поста
- */
-function previewKeyboard(id, postType) {
+async function ensureAdminCallbackAccess(ctx) {
+  const adminIds = getAdminChatIds();
+  if (adminIds.length === 0) {
+    await ctx.answerCbQuery('TELEGRAM_ADMIN_CHAT_ID is not set');
+    return false;
+  }
+  if (!hasAdminAccess(ctx.from.id)) {
+    await ctx.answerCbQuery('No access');
+    return false;
+  }
+  return true;
+}
+
+function getDefaultProfile() {
+  return getChannelProfiles()[0] || null;
+}
+
+function profileSelectionKeyboard(postType = 'digest', mediaCount = DEFAULT_MEDIA_COUNT) {
+  const profiles = getChannelProfiles();
+  return {
+    inline_keyboard: profiles.map((profile) => ([
+      {
+        text: `${profile.title} (${profile.id})`,
+        callback_data: `cmd_pick_profile|${profile.id}|${postType}|${mediaCount}`,
+      },
+    ])),
+  };
+}
+
+function previewKeyboard(id, postType, mediaCount = DEFAULT_MEDIA_COUNT) {
+  const countLabel = `Images: ${mediaCount}`;
   return {
     inline_keyboard: [
       [
-        { text: 'Опубликовать ✅', callback_data: `cmd_approve_${id}` },
-        { text: 'Перегенерировать 🔄', callback_data: `cmd_regen_${id}_${postType}` },
+        { text: 'Publish', callback_data: `cmd_approve_${id}` },
+        { text: 'Regenerate', callback_data: `cmd_regen_${id}_${postType}` },
       ],
       [
-        { text: 'Отмена ❌', callback_data: `cmd_cancel_${id}` },
+        { text: 'Replace source', callback_data: `cmd_replace_source_${id}` },
+      ],
+      [
+        { text: countLabel, callback_data: `noop_${id}` },
+      ],
+      [
+        { text: '0', callback_data: `cmd_media_count_${id}_0` },
+        { text: '1', callback_data: `cmd_media_count_${id}_1` },
+      ],
+      [
+        { text: 'Cancel', callback_data: `cmd_cancel_${id}` },
       ],
     ],
   };
 }
 
-/**
- * Отправляет preview поста админу
- */
-async function sendPreview(ctx, post, id, postType) {
-  const previewText = post.text.length > 3500
-    ? post.text.slice(0, 3500) + '...'
-    : post.text;
+function getMediaPaths(post) {
+  return Array.isArray(post.media?.paths)
+    ? post.media.paths.filter(Boolean)
+    : (post.media?.path ? [post.media.path] : []);
+}
 
-  const header = `📋 <b>Preview</b> (ID: ${id}, тип: ${postType})\n\n`;
+function setMediaPaths(post, paths) {
+  const next = (paths || []).filter(Boolean);
+  if (next.length === 0) {
+    post.media = { type: 'none', path: null, paths: [] };
+    return;
+  }
+  post.media = { type: 'photo', path: next[0], paths: next };
+}
 
-  await ctx.reply(header + previewText, {
+function applyMediaCount(entry, requestedCount) {
+  const count = Math.max(0, Math.min(Number(requestedCount) || 0, 1));
+  entry.mediaCount = count;
+
+  if (count === 0) {
+    setMediaPaths(entry.post, []);
+    return;
+  }
+
+  const current = getMediaPaths(entry.post);
+  setMediaPaths(entry.post, current.slice(0, 1));
+}
+
+function makePendingEntry(post, type, mediaCount = DEFAULT_MEDIA_COUNT, sourceHistory = []) {
+  return {
+    post,
+    type,
+    mediaCount,
+    previewRefs: [],
+    sourceHistory: [...new Set([
+      ...sourceHistory,
+      ...(post._leadMediaCandidate?.sourceKey ? [post._leadMediaCandidate.sourceKey] : []),
+    ])],
+    profileId: post._profileId || 'default',
+    profileTitle: post._profileTitle || 'Default channel',
+    targetChannelId: post._targetChannelId || '',
+  };
+}
+
+async function sendPreview(bot, chatId, entry, id, title = '<b>Preview</b>') {
+  const previewText = entry.post.text.length > 3500 ? `${entry.post.text.slice(0, 3500)}...` : entry.post.text;
+  const header = `${title} (${entry.profileTitle}, ID: ${id}, type: ${entry.type})`;
+  const keyboard = previewKeyboard(id, entry.type, entry.mediaCount);
+  const mediaPaths = getMediaPaths(entry.post);
+
+  if (mediaPaths.length === 1) {
+    const caption = `${header}\n\n${previewText}`;
+    if (getTelegramEntityLength(caption) <= 1024) {
+      const message = await bot.telegram.sendPhoto(chatId, { source: mediaPaths[0] }, {
+        caption,
+        parse_mode: 'HTML',
+        reply_markup: keyboard,
+      });
+      return [{ chatId, messageId: message.message_id }];
+    }
+  }
+
+  const message = await bot.telegram.sendMessage(chatId, `${header}\n\n${previewText}`, {
     parse_mode: 'HTML',
-    reply_markup: previewKeyboard(id, postType),
+    reply_markup: keyboard,
+  });
+  return [{ chatId, messageId: message.message_id }];
+}
+
+async function clearPreviewKeyboards(bot, refs = []) {
+  for (const ref of refs) {
+    if (!ref?.chatId || !ref?.messageId) continue;
+    try {
+      await bot.telegram.editMessageReplyMarkup(ref.chatId, ref.messageId, undefined, undefined);
+    } catch (err) {
+      logger.debug(`Preview keyboard cleanup skipped for ${ref.chatId}/${ref.messageId}: ${err.message}`);
+    }
+  }
+}
+
+async function sendPreviewToAdmins(bot, entry, id, title = '<b>Preview</b>') {
+  const adminIds = getAdminChatIds();
+  if (adminIds.length === 0) {
+    throw new Error('TELEGRAM_ADMIN_CHAT_ID is not set in .env');
+  }
+
+  const refs = [];
+  let lastError = null;
+
+  for (const adminChatId of adminIds) {
+    try {
+      const sentRefs = await sendPreview(bot, adminChatId, entry, id, title);
+      refs.push(...sentRefs);
+    } catch (err) {
+      lastError = err;
+      logger.error(`Failed to send preview to admin ${adminChatId}: ${err.message}`);
+    }
+  }
+
+  if (refs.length === 0 && lastError) {
+    throw lastError;
+  }
+
+  entry.previewRefs = refs;
+  return refs;
+}
+
+function runInBackground(fn) {
+  fn().catch((err) => logger.error(`Background task failed: ${err.message}`));
+}
+
+function parsePostCommandArgs(parts) {
+  const defaultProfile = getDefaultProfile();
+  const arg1 = parts[1];
+  const arg2 = parts[2];
+  const arg3 = parts[3];
+
+  if (!arg1) {
+    return { profile: null, postType: 'digest', mediaCount: DEFAULT_MEDIA_COUNT };
+  }
+
+  const profileFromArg1 = getChannelProfile(arg1);
+  if (profileFromArg1) {
+    const postType = VALID_TYPES.includes(arg2) ? arg2 : 'digest';
+    const mediaCount = Number.isFinite(Number(arg3)) ? Number(arg3) : DEFAULT_MEDIA_COUNT;
+    return { profile: profileFromArg1, postType, mediaCount };
+  }
+
+  if (VALID_TYPES.includes(arg1)) {
+    const mediaCount = Number.isFinite(Number(arg2)) ? Number(arg2) : DEFAULT_MEDIA_COUNT;
+    return { profile: defaultProfile, postType: arg1, mediaCount };
+  }
+
+  return { profile: undefined, postType: null, mediaCount: DEFAULT_MEDIA_COUNT };
+}
+
+async function startGeneration(bot, chatId, profile, postType, initialMediaCount, generateOnly) {
+  await bot.telegram.sendMessage(chatId, `Generating post for <b>${profile.title}</b> (<code>${profile.id}</code>), type <b>${postType}</b>...\nThis may take 1-2 minutes.`, {
+    parse_mode: 'HTML',
+  });
+
+  runInBackground(async () => {
+    try {
+      const post = await generateOnly(postType, { profileId: profile.id });
+
+      idCounter += 1;
+      const id = idCounter;
+      const entry = makePendingEntry(post, postType, initialMediaCount);
+      applyMediaCount(entry, initialMediaCount);
+      pendingPosts.set(id, entry);
+
+      await sendPreviewToAdmins(bot, entry, id);
+      logger.info(`Command /post ${postType}: preview sent for profile=${profile.id}, id=${id}`);
+    } catch (err) {
+      logger.error(`Error in /post command: ${err.message}`);
+      await bot.telegram.sendMessage(chatId, `Generation error: ${err.message}`);
+    }
   });
 }
 
-/**
- * Запускает async-функцию в фоне, логируя ошибки если промис упадёт.
- */
-function runInBackground(fn) {
-  fn().catch((err) => logger.error(`Фоновая задача упала: ${err.message}`));
-}
-
-/**
- * Регистрирует команды и callback-обработчики на боте.
- *
- * @param {import('telegraf').Telegraf} bot
- * @param {{ generateOnly: function, publisher: import('../publisher/telegramPublisher').TelegramPublisher }} deps
- */
-function setupCommands(bot, { generateOnly, publisher }) {
-  // ─── /post <type> ───
+function setupCommands(bot, { generateOnly, generateFromAnalysis, publisher }) {
+  bot.command('channels', adminOnly, async (ctx) => {
+    const profiles = getChannelProfiles();
+    const lines = [
+      '<b>Available channels</b>',
+      '',
+      ...profiles.map((profile) => `• <b>${profile.title}</b> — <code>${profile.id}</code> → <code>${profile.telegramChannelId || 'not set'}</code>`),
+      '',
+      'Usage:',
+      '<code>/post profile_id digest</code>',
+      '<code>/post profile_id analysis</code>',
+    ];
+    await ctx.reply(lines.join('\n'), { parse_mode: 'HTML' });
+  });
 
   bot.command('post', adminOnly, async (ctx) => {
-    const parts = ctx.message.text.split(/\s+/);
-    const postType = parts[1] || 'digest';
+    const parts = ctx.message.text.split(/\s+/).filter(Boolean);
+    const profiles = getChannelProfiles();
+    const parsed = parsePostCommandArgs(parts);
 
-    if (!VALID_TYPES.includes(postType)) {
-      return ctx.reply(
-        `❌ Неизвестный тип: <code>${postType}</code>\n\nДоступные: ${VALID_TYPES.join(', ')}`,
-        { parse_mode: 'HTML' },
-      );
+    if (parsed.profile === undefined) {
+      return ctx.reply(`Unknown profile or type.\n\nUse /channels to list profiles.\nAvailable types: ${VALID_TYPES.join(', ')}`);
     }
 
-    const chatId = ctx.chat.id;
-
-    await ctx.reply(`⏳ Генерация поста (<b>${postType}</b>)...\nЭто может занять 1-2 минуты.`, {
-      parse_mode: 'HTML',
-    });
-
-    // Генерация в фоне — не блокируем middleware Telegraf
-    runInBackground(async () => {
-      try {
-        const post = await generateOnly(postType);
-
-        _idCounter += 1;
-        const id = _idCounter;
-        pendingPosts.set(id, { post, type: postType });
-
-        const previewText = post.text.length > 3500
-          ? post.text.slice(0, 3500) + '...'
-          : post.text;
-
-        const header = `📋 <b>Preview</b> (ID: ${id}, тип: ${postType})\n\n`;
-
-        await bot.telegram.sendMessage(chatId, header + previewText, {
+    if (!parsed.profile) {
+      if (profiles.length > 1) {
+        return ctx.reply('Choose a channel profile for generation. For non-digest types use <code>/post profile_id analysis</code>.', {
           parse_mode: 'HTML',
-          reply_markup: previewKeyboard(id, postType),
+          reply_markup: profileSelectionKeyboard(),
         });
-
-        logger.info(`Команда /post ${postType}: preview отправлен, id=${id}`);
-      } catch (err) {
-        logger.error(`Ошибка команды /post: ${err.message}`);
-        await bot.telegram.sendMessage(chatId, `❌ Ошибка генерации: ${err.message}`);
       }
-    });
-  });
 
-  // ─── /status ───
+      if (!profiles[0]) {
+        return ctx.reply('No channel profiles configured');
+      }
+
+      parsed.profile = profiles[0];
+    }
+
+    if (!VALID_TYPES.includes(parsed.postType)) {
+      return ctx.reply(`Unknown type: <code>${parsed.postType}</code>\n\nAvailable: ${VALID_TYPES.join(', ')}`, {
+        parse_mode: 'HTML',
+      });
+    }
+
+    const initialMediaCount = Math.max(0, Math.min(Number(parsed.mediaCount) || DEFAULT_MEDIA_COUNT, 1));
+    await startGeneration(bot, ctx.chat.id, parsed.profile, parsed.postType, initialMediaCount, generateOnly);
+  });
 
   bot.command('status', adminOnly, async (ctx) => {
     try {
-      const todayRow = queryOne(
-        "SELECT COUNT(*) as cnt FROM posts WHERE published_at >= date('now')"
-      );
-      const totalRow = queryOne(
-        'SELECT COUNT(*) as cnt FROM posts WHERE published_at IS NOT NULL'
-      );
-
+      const todayRow = queryOne("SELECT COUNT(*) as cnt FROM posts WHERE published_at >= date('now')");
+      const totalRow = queryOne('SELECT COUNT(*) as cnt FROM posts WHERE published_at IS NOT NULL');
       const todayCount = todayRow ? todayRow.cnt : 0;
       const totalCount = totalRow ? totalRow.cnt : 0;
       const pendingCount = pendingPosts.size;
-
-      const aiProvider = config.ai.geminiKey ? 'Gemini 2.5 Flash' : 'Qwen';
+      const hasGemini = Array.isArray(config.ai.geminiKeys) ? config.ai.geminiKeys.length > 0 : Boolean(config.ai.geminiKey);
+      const aiProvider = hasGemini ? 'Gemini 2.5 Flash' : 'Not configured';
 
       const text = [
-        '📊 <b>Статус бота</b>',
+        '<b>Bot status</b>',
         '',
-        `📝 Постов сегодня: <b>${todayCount}</b>`,
-        `📚 Постов всего: <b>${totalCount}</b>`,
-        `🤖 AI: <b>${aiProvider}</b>`,
-        `⏰ Режим: <b>auto</b>`,
-        `📬 Ожидают решения: <b>${pendingCount}</b>`,
+        `Posts today: <b>${todayCount}</b>`,
+        `Posts total: <b>${totalCount}</b>`,
+        `AI: <b>${aiProvider}</b>`,
+        `Pending decisions: <b>${pendingCount}</b>`,
+        `Profiles: <b>${getChannelProfiles().length}</b>`,
       ].join('\n');
 
       await ctx.reply(text, { parse_mode: 'HTML' });
     } catch (err) {
-      logger.error(`Ошибка команды /status: ${err.message}`);
-      await ctx.reply(`❌ Ошибка: ${err.message}`);
+      logger.error(`Error in /status command: ${err.message}`);
+      await ctx.reply(`Error: ${err.message}`);
     }
   });
 
-  // ─── Callback: Опубликовать ───
+  bot.action(/^cmd_pick_profile\|([^|]+)\|(\w+)\|(\d+)$/, async (ctx) => {
+    if (!(await ensureAdminCallbackAccess(ctx))) return;
+
+    const profile = getChannelProfile(ctx.match[1]);
+    const postType = ctx.match[2];
+    const mediaCount = parseInt(ctx.match[3], 10);
+
+    if (!profile) return ctx.answerCbQuery('Unknown profile');
+    if (!VALID_TYPES.includes(postType)) return ctx.answerCbQuery('Unknown type');
+
+    await ctx.answerCbQuery(`Selected ${profile.title}`);
+    await startGeneration(bot, ctx.chat.id, profile, postType, mediaCount, generateOnly);
+  });
 
   bot.action(/^cmd_approve_(\d+)$/, async (ctx) => {
+    if (!(await ensureAdminCallbackAccess(ctx))) return;
+
     const id = parseInt(ctx.match[1], 10);
     const entry = pendingPosts.get(id);
-
-    if (!entry) {
-      return ctx.answerCbQuery('Пост не найден (возможно, уже обработан)');
-    }
+    if (!entry) return ctx.answerCbQuery('Post not found (already processed?)');
 
     try {
-      const channelId = config.telegram.channelId;
-      if (!channelId) {
-        return ctx.answerCbQuery('TELEGRAM_CHANNEL_ID не задан');
-      }
+      const channelId = entry.targetChannelId || config.telegram.channelId;
+      if (!channelId) return ctx.answerCbQuery('No target channel configured');
 
       await publisher.publish(entry.post, channelId);
+      await clearPreviewKeyboards(bot, entry.previewRefs);
       pendingPosts.delete(id);
 
-      await ctx.answerCbQuery('Опубликовано ✅');
-      await ctx.editMessageReplyMarkup(undefined);
-      logger.info(`Пост ${id} опубликован через команду`);
+      await ctx.answerCbQuery('Published');
+      logger.info(`Post ${id} published via command to ${channelId}`);
     } catch (err) {
-      logger.error(`Ошибка публикации поста ${id}: ${err.message}`);
-      await ctx.answerCbQuery('Ошибка публикации');
+      logger.error(`Publish error for post ${id}: ${err.message}`);
+      await ctx.answerCbQuery('Publish error');
     }
   });
 
-  // ─── Callback: Перегенерировать ───
-
   bot.action(/^cmd_regen_(\d+)_(\w+)$/, async (ctx) => {
+    if (!(await ensureAdminCallbackAccess(ctx))) return;
+
     const id = parseInt(ctx.match[1], 10);
     const postType = ctx.match[2];
+    const entry = pendingPosts.get(id);
+    if (!entry) return ctx.answerCbQuery('Post not found');
 
-    if (!pendingPosts.has(id)) {
-      return ctx.answerCbQuery('Пост не найден');
-    }
+    await ctx.answerCbQuery('Regenerating...');
+    await clearPreviewKeyboards(bot, entry.previewRefs);
 
-    const chatId = ctx.chat.id;
-
-    await ctx.answerCbQuery('🔄 Перегенерация...');
-    await ctx.editMessageReplyMarkup(undefined);
-
-    await bot.telegram.sendMessage(chatId, `🔄 Перегенерация (<b>${postType}</b>)...\nЭто может занять 1-2 минуты.`, {
+    await bot.telegram.sendMessage(ctx.chat.id, `Regenerating for <b>${entry.profileTitle}</b>...\nThis may take 1-2 minutes.`, {
       parse_mode: 'HTML',
     });
 
-    // Генерация в фоне
     runInBackground(async () => {
       try {
-        const newPost = await generateOnly(postType);
-        pendingPosts.set(id, { post: newPost, type: postType });
-
-        const previewText = newPost.text.length > 3500
-          ? newPost.text.slice(0, 3500) + '...'
-          : newPost.text;
-
-        const header = `📋 <b>Preview (перегенерирован)</b> (ID: ${id}, тип: ${postType})\n\n`;
-
-        await bot.telegram.sendMessage(chatId, header + previewText, {
-          parse_mode: 'HTML',
-          reply_markup: previewKeyboard(id, postType),
-        });
-
-        logger.info(`Пост ${id} перегенерирован (${postType})`);
+        const newPost = await generateOnly(postType, { profileId: entry.profileId });
+        const nextEntry = makePendingEntry(newPost, postType, entry.mediaCount ?? DEFAULT_MEDIA_COUNT);
+        applyMediaCount(nextEntry, nextEntry.mediaCount);
+        pendingPosts.set(id, nextEntry);
+        await sendPreviewToAdmins(bot, nextEntry, id, '<b>Preview (regenerated)</b>');
+        logger.info(`Post ${id} regenerated (${postType}) for profile=${entry.profileId}`);
       } catch (err) {
-        logger.error(`Ошибка перегенерации поста ${id}: ${err.message}`);
-        await bot.telegram.sendMessage(chatId, `❌ Ошибка перегенерации: ${err.message}`);
+        logger.error(`Regeneration error for post ${id}: ${err.message}`);
+        await bot.telegram.sendMessage(ctx.chat.id, `Regeneration error: ${err.message}`);
       }
     });
   });
 
-  // ─── Callback: Отмена ───
+  bot.action(/^cmd_replace_source_(\d+)$/, async (ctx) => {
+    if (!(await ensureAdminCallbackAccess(ctx))) return;
 
-  bot.action(/^cmd_cancel_(\d+)$/, async (ctx) => {
     const id = parseInt(ctx.match[1], 10);
-    pendingPosts.delete(id);
+    const entry = pendingPosts.get(id);
+    if (!entry) return ctx.answerCbQuery('Post not found');
 
-    await ctx.answerCbQuery('Отменено ❌');
-    await ctx.editMessageReplyMarkup(undefined);
-    logger.info(`Пост ${id} отменён через команду`);
+    const analysisData = entry.post?._analysisData;
+    if (!analysisData?.clusters) return ctx.answerCbQuery('No source context');
+
+    const sourceOverride = mediaHandler.selectAlternativeLeadMediaPost(
+      analysisData.clusters,
+      entry.sourceHistory || [],
+      entry.post.text || '',
+      { profileId: entry.profileId },
+    );
+    if (!sourceOverride) return ctx.answerCbQuery('No alternative source posts');
+
+    await ctx.answerCbQuery('Replacing source...');
+    await clearPreviewKeyboards(bot, entry.previewRefs);
+
+    await bot.telegram.sendMessage(ctx.chat.id, `Replacing source for <b>${entry.profileTitle}</b>...\nThis may take 1-2 minutes.`, {
+      parse_mode: 'HTML',
+    });
+
+    runInBackground(async () => {
+      try {
+        const newPost = await generateFromAnalysis(entry.type, analysisData, {
+          leadMediaOverride: sourceOverride,
+          profileId: entry.profileId,
+        });
+        const nextEntry = makePendingEntry(
+          newPost,
+          entry.type,
+          entry.mediaCount ?? DEFAULT_MEDIA_COUNT,
+          [...(entry.sourceHistory || []), sourceOverride.sourceKey],
+        );
+        applyMediaCount(nextEntry, nextEntry.mediaCount);
+        pendingPosts.set(id, nextEntry);
+        await sendPreviewToAdmins(bot, nextEntry, id, '<b>Preview (updated source)</b>');
+        logger.info(`Post ${id}: source replaced with ${sourceOverride.channel}/${sourceOverride.telegramPostId}`);
+      } catch (err) {
+        logger.error(`Replace source error for post ${id}: ${err.message}`);
+        await bot.telegram.sendMessage(ctx.chat.id, `Replace source error: ${err.message}`);
+      }
+    });
   });
 
-  logger.info('Команды бота зарегистрированы: /post, /status');
+  bot.action(/^cmd_media_count_(\d+)_(\d+)$/, async (ctx) => {
+    if (!(await ensureAdminCallbackAccess(ctx))) return;
+
+    const id = parseInt(ctx.match[1], 10);
+    const count = parseInt(ctx.match[2], 10);
+    const entry = pendingPosts.get(id);
+    if (!entry) return ctx.answerCbQuery('Post not found');
+
+    applyMediaCount(entry, count);
+    await ctx.answerCbQuery(`Images: ${entry.mediaCount}`);
+    await clearPreviewKeyboards(bot, entry.previewRefs);
+    await sendPreviewToAdmins(bot, entry, id, '<b>Preview (updated)</b>');
+  });
+
+  bot.action(/^noop_\d+$/, async (ctx) => {
+    if (!(await ensureAdminCallbackAccess(ctx))) return;
+    await ctx.answerCbQuery('Select image count below');
+  });
+
+  bot.action(/^cmd_cancel_(\d+)$/, async (ctx) => {
+    if (!(await ensureAdminCallbackAccess(ctx))) return;
+
+    const id = parseInt(ctx.match[1], 10);
+    const entry = pendingPosts.get(id);
+    await clearPreviewKeyboards(bot, entry?.previewRefs);
+    pendingPosts.delete(id);
+    await ctx.answerCbQuery('Cancelled');
+    logger.info(`Post ${id} cancelled via command`);
+  });
+
+  logger.info('Bot commands registered: /post, /channels, /status');
 }
 
 module.exports = { setupCommands };

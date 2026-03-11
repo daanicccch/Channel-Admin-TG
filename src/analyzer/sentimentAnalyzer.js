@@ -48,7 +48,7 @@ ${previousContext}
 Верни ТОЛЬКО JSON объект с полями: overall, score, reasoning.`;
 
     try {
-      const result = await aiProvider.generateJSON(prompt);
+      const result = await aiProvider.generateJSON(prompt, { temperature: 0.1, maxTokens: 1024 });
 
       const sentiment = {
         overall: VALID_SENTIMENTS.includes(result.overall) ? result.overall : 'neutral',

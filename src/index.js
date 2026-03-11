@@ -1,4 +1,4 @@
-const { config, initDb, closeDb } = require('./config');
+const { initDb, closeDb } = require('./config');
 const logger = require('./utils/logger');
 const TelegramScraper = require('./scraper/telegramScraper');
 const WebScraper = require('./scraper/webScraper');
@@ -6,12 +6,12 @@ const ContentAnalyzer = require('./analyzer/contentAnalyzer');
 const TrendDetector = require('./analyzer/trendDetector');
 const SentimentAnalyzer = require('./analyzer/sentimentAnalyzer');
 const PostGenerator = require('./generator/postGenerator');
+const mediaHandler = require('./generator/mediaHandler');
 const { TelegramPublisher } = require('./publisher/telegramPublisher');
 const { QueueManager } = require('./publisher/queueManager');
 const { Scheduler } = require('./publisher/scheduler');
 const { setupCommands } = require('./commands/botCommands');
-
-// ────────── CLI args ──────────
+const { getChannelProfile } = require('./channelProfiles');
 
 function parseArgs() {
   const args = { mode: 'manual', type: 'digest' };
@@ -24,40 +24,112 @@ function parseArgs() {
   return args;
 }
 
-// ────────── Глобальные ссылки для graceful shutdown ──────────
-
 let telegramScraper = null;
 let scheduler = null;
 let publisher = null;
 
-// ────────── Генерация поста (без публикации) ──────────
+function getCollectionOptions(postType) {
+  if (postType === 'weekly') {
+    return {
+      lookbackHours: 24 * 7,
+      limitOverride: 150,
+    };
+  }
 
-async function generateOnly(postType = 'digest') {
-  logger.info(`=== Генерация: ${postType} ===`);
+  if (postType === 'analysis') {
+    return {
+      lookbackHours: 48,
+      limitOverride: 80,
+    };
+  }
 
-  // 1. SCRAPE
-  logger.info('Этап: сбор данных');
+  return {
+    lookbackHours: config.limits.lookbackHours,
+    limitOverride: null,
+  };
+}
+
+function resolveProfile(profileId) {
+  const profile = getChannelProfile(profileId);
+  if (!profile) {
+    throw new Error(`Unknown channel profile: ${profileId}`);
+  }
+  if (!profile.telegramChannelId) {
+    throw new Error(`telegram_channel_id is not configured for profile "${profile.id}"`);
+  }
+  return profile;
+}
+
+async function generateFromAnalysis(postType = 'digest', analysisData = {}, options = {}) {
+  const profile = resolveProfile(options.profileId || analysisData.profileId);
+
+  logger.info(`Stage: generation [${profile.id}]`);
+  const postGenerator = new PostGenerator();
+  const post = await postGenerator.generatePost(postType, {
+    ...analysisData,
+    profileId: profile.id,
+    leadMediaOverride: options.leadMediaOverride || null,
+  }, profile);
+
+  if (post._leadMediaCandidate) {
+    mediaHandler.markSourcePostUsed(post._leadMediaCandidate, {
+      profileId: profile.id,
+      postType,
+      stage: options.leadMediaOverride ? 'regenerated' : 'generated',
+      targetChannelId: profile.telegramChannelId || null,
+    });
+  }
+
+  post._analysisData = {
+    ...analysisData,
+    profileId: profile.id,
+  };
+
+  logger.info(`Post generated for profile=${profile.id}`);
+  return post;
+}
+
+async function generateOnly(postType = 'digest', options = {}) {
+  const profile = resolveProfile(options.profileId);
+  const collectionOptions = getCollectionOptions(postType);
+
+  logger.info(`=== Generate: ${postType} [${profile.id}] ===`);
+  logger.info(`Stage: collect data [${profile.id}]`);
+
   const scraper = new TelegramScraper();
-  const webScraper = new WebScraper();
+  const webScraper = new WebScraper({ sourcesPath: profile.webSourcesPath });
+  telegramScraper = scraper;
 
   await scraper.connect();
 
-  const [posts, webData] = await Promise.all([
-    scraper.scrapeAll(),
-    webScraper.fetchAll(),
+  const [postsByChannel, webData] = await Promise.all([
+    scraper.scrapeAll(profile.sourceChannels, {
+      profileId: profile.id,
+      lookbackHours: collectionOptions.lookbackHours,
+      limitOverride: collectionOptions.limitOverride,
+    }),
+    webScraper.fetchAll({ enabledSources: profile.webSources }),
   ]);
 
-  logger.info(`Собрано: ${posts.length} постов из каналов, веб-данные получены`);
+  const posts = (postsByChannel || []).flatMap((channelResult) =>
+    (channelResult.posts || []).map((post) => ({
+      ...post,
+      channel: channelResult.channel,
+      channelTitle: channelResult.channelTitle,
+    }))
+  );
 
-  // Отключаем скрапер сразу после сбора
+  logger.info(`Collected ${posts.length} source posts for profile=${profile.id}`);
+
   try {
     await scraper.disconnect();
   } catch (err) {
-    logger.warn(`Ошибка отключения скрапера: ${err.message}`);
+    logger.warn(`Telegram scraper disconnect warning: ${err.message}`);
+  } finally {
+    telegramScraper = null;
   }
 
-  // 2. ANALYZE
-  logger.info('Этап: анализ');
+  logger.info(`Stage: analyze [${profile.id}]`);
   const contentAnalyzer = new ContentAnalyzer();
   const clusters = await contentAnalyzer.analyze(posts, webData);
 
@@ -67,114 +139,103 @@ async function generateOnly(postType = 'digest') {
   const sentimentAnalyzer = new SentimentAnalyzer();
   const sentiment = await sentimentAnalyzer.analyzeSentiment(clusters, webData);
 
-  logger.info(`Анализ завершён: ${clusters.length || 0} кластеров, ${trends.length || 0} трендов`);
+  logger.info(`Analysis complete for ${profile.id}: ${clusters.length || 0} clusters, ${trends.length || 0} trends`);
 
-  // 3. GENERATE
-  logger.info('Этап: генерация поста');
-  const postGenerator = new PostGenerator();
-  const post = await postGenerator.generatePost(postType, {
+  const analysisData = {
     clusters,
     trends,
     sentiment,
     webData,
-  });
+    profileId: profile.id,
+    lookbackHours: collectionOptions.lookbackHours,
+  };
 
-  logger.info('Пост сгенерирован');
-  return post;
+  return generateFromAnalysis(postType, analysisData, { profileId: profile.id });
 }
 
-// ────────── Основной пайплайн (генерация + публикация) ──────────
+async function runPipeline(postType = 'digest', options = {}) {
+  const profile = resolveProfile(options.profileId);
 
-async function runPipeline(postType = 'digest') {
-  logger.info(`=== Запуск пайплайна: ${postType} ===`);
+  logger.info(`=== Pipeline start: ${postType} [${profile.id}] ===`);
+  const post = await generateOnly(postType, { profileId: profile.id });
 
-  const post = await generateOnly(postType);
-
-  // 4. PUBLISH
-  logger.info('Этап: публикация');
+  logger.info(`Stage: publish [${profile.id}]`);
   if (!publisher) {
     publisher = new TelegramPublisher();
   }
-  const queueManager = new QueueManager(publisher);
-  const queueId = queueManager.addToQueue(post);
+
+  const queueManager = new QueueManager(publisher, generateFromAnalysis);
+  queueManager.addToQueue(post);
   await queueManager.processQueue();
 
   const status = queueManager.getQueueStatus();
-  logger.info(`Очередь: pending=${status.pending}, published=${status.published}, rejected=${status.rejected}`);
-
-  logger.info(`=== Пайплайн ${postType} завершён ===`);
+  logger.info(`Queue: pending=${status.pending}, published=${status.published}, rejected=${status.rejected}`);
+  logger.info(`=== Pipeline done: ${postType} [${profile.id}] ===`);
 }
-
-// ────────── Режимы запуска ──────────
 
 async function main() {
   const args = parseArgs();
   const mode = args.mode;
   const postType = args.type || 'digest';
+  const profileId = args.profile;
 
-  // Инициализация БД перед началом работы
   await initDb();
-
-  logger.info(`Запуск бота в режиме: ${mode}, тип: ${postType}`);
+  logger.info(`Bot starting mode=${mode} type=${postType} profile=${profileId || 'default'}`);
 
   switch (mode) {
     case 'manual': {
-      await runPipeline(postType);
+      await runPipeline(postType, { profileId });
       process.exit(0);
       break;
     }
 
     case 'auto': {
-      // Планировщик
-      scheduler = new Scheduler(runPipeline);
+      scheduler = new Scheduler((type) => runPipeline(type, { profileId }));
       scheduler.start();
 
-      // Telegraf бот для admin callbacks
       publisher = new TelegramPublisher();
-      const queueManager = new QueueManager(publisher);
+      const queueManager = new QueueManager(publisher, generateFromAnalysis);
       const bot = publisher.getBot();
       queueManager.setupAdminCallbacks(bot);
 
-      // Команды: /post, /status
-      setupCommands(bot, { generateOnly, publisher });
+      setupCommands(bot, { generateOnly, generateFromAnalysis, publisher });
 
-      // Запускаем бота (long polling)
       bot.launch();
-      logger.info('Telegraf бот запущен (long polling)');
-
-      // Процесс остаётся живым
+      logger.info('Telegraf bot started (long polling)');
       break;
     }
 
     case 'scrape-only': {
-      logger.info('Режим scrape-only: только сбор данных');
+      const profile = resolveProfile(profileId);
+
+      logger.info(`Scrape-only mode for profile=${profile.id}`);
       const scraper = new TelegramScraper();
-      const webScraper = new WebScraper();
+      const webScraper = new WebScraper({ sourcesPath: profile.webSourcesPath });
+      telegramScraper = scraper;
 
       await scraper.connect();
       const [posts, webData] = await Promise.all([
-        scraper.scrapeAll(),
-        webScraper.fetchAll(),
+        scraper.scrapeAll(profile.sourceChannels, { profileId: profile.id }),
+        webScraper.fetchAll({ enabledSources: profile.webSources }),
       ]);
 
-      logger.info(`Собрано ${posts.length} постов из каналов`);
-      logger.info(`Веб-данные: ${JSON.stringify(Object.keys(webData || {}))}`);
+      logger.info(`Collected ${posts.length} channel batches`);
+      logger.info(`Web sources: ${JSON.stringify(Object.keys(webData || {}))}`);
 
       await scraper.disconnect();
+      telegramScraper = null;
       process.exit(0);
       break;
     }
 
     default:
-      logger.error(`Неизвестный режим: ${mode}. Используйте: manual, auto, scrape-only`);
+      logger.error(`Unknown mode: ${mode}. Use manual, auto, scrape-only`);
       process.exit(1);
   }
 }
 
-// ────────── Graceful shutdown ──────────
-
 async function shutdown(signal) {
-  logger.info(`Получен ${signal}, завершаем работу...`);
+  logger.info(`Received ${signal}, shutting down...`);
 
   if (scheduler) {
     scheduler.stop();
@@ -184,34 +245,39 @@ async function shutdown(signal) {
     try {
       await telegramScraper.disconnect();
     } catch (err) {
-      logger.warn(`Ошибка отключения скрапера: ${err.message}`);
+      logger.warn(`Telegram scraper disconnect warning: ${err.message}`);
     }
   }
 
   if (publisher) {
     try {
+      await publisher.close();
+    } catch (err) {
+      logger.warn(`Publisher close warning: ${err.message}`);
+    }
+
+    try {
       publisher.getBot().stop(signal);
     } catch (err) {
-      logger.warn(`Ошибка остановки бота: ${err.message}`);
+      logger.warn(`Bot stop warning: ${err.message}`);
     }
   }
 
   try {
     closeDb();
   } catch (_) {
-    // БД могла быть не открыта
+    // DB may already be closed.
   }
 
-  logger.info('Бот остановлен');
+  logger.info('Bot stopped');
   process.exit(0);
 }
 
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 
-// Запуск
 main().catch((err) => {
-  logger.error(`Критическая ошибка: ${err.message}`);
+  logger.error(`Fatal error: ${err.message}`);
   logger.error(err.stack);
   process.exit(1);
 });

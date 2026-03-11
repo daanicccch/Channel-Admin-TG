@@ -1,0 +1,13 @@
+{
+  "profiles": [
+    {
+      "id": "default",
+      "title": "Default channel",
+      "rules_path": "rules/POST_RULES.md",
+      "templates_path": "rules/TEMPLATES.md",
+      "humanizer_path": "src/generator/HUMANIZER_RULES.md",
+      "source_channels_path": "data/channels.json",
+      "web_sources": ["cryptopanic", "coingecko", "defillama", "dexscreener", "birdeye"]
+    }
+  ]
+}

@@ -5,94 +5,160 @@ const formatBuilder = require('./formatBuilder');
 const mediaHandler = require('./mediaHandler');
 
 const MAX_RETRIES = 2;
+const CAPTION_SAFE_TEXT_LIMIT = parseInt(process.env.TG_CAPTION_SAFE_TEXT_LIMIT || '900', 10);
+const EMOJI_REGEX = /[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F1E0}-\u{1F1FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{FE00}-\u{FE0F}\u{1F900}-\u{1F9FF}\u{1FA00}-\u{1FA6F}\u{1FA70}-\u{1FAFF}\u{200D}\u{2B50}\u{23CF}\u{23E9}-\u{23F3}\u{23F8}-\u{23FA}\u{25AA}-\u{25AB}\u{25B6}\u{25C0}\u{25FB}-\u{25FE}]/gu;
+const SOURCE_STOP_WORDS = new Set([
+  'это', 'как', 'что', 'или', 'для', 'the', 'and', 'with', 'from', 'that', 'this', 'have', 'will',
+  'post', 'news', 'today', 'обзор', 'дайджест', 'рынок', 'канал', 'канале', 'поста', 'текст',
+  'очень', 'если', 'после', 'между', 'почему', 'когда', 'where', 'what', 'about', 'your',
+  'telegram', 'gift', 'gifts', 'channel', 'который', 'которая', 'которые', 'сегодня',
+  'просто', 'снова', 'теперь', 'самый', 'самая', 'самое', 'более', 'может', 'нужно',
+]);
 
 class PostGenerator {
-  /**
-   * Generate a complete post ready for publishing.
-   * @param {string} type - post type: digest, analysis, alert, weekly
-   * @param {object} analysisData - { clusters, webData, sentiment, trends }
-   * @returns {{ text: string, media: { type: string, path: string|null }, keyboard: Array, hashtags: string, postType: string }}
-   */
-  async generatePost(type, analysisData) {
-    const { clusters = [], webData = {}, sentiment = {}, trends = [] } = analysisData || {};
+  async generatePost(type, analysisData, profile = null) {
+    const { clusters = [], webData = {}, sentiment = {}, trends = [], leadMediaOverride = null } = analysisData || {};
+    const enforceCaptionForSourceMedia = ['digest', 'alert'].includes(type);
+    const leadMediaCandidate = leadMediaOverride || mediaHandler.selectLeadMediaPost(clusters, '', {
+      profileId: profile?.id || analysisData?.profileId || null,
+    });
+    const sourceContext = this._buildSourceContext(leadMediaCandidate, clusters);
 
-    // 1. Load rules and templates
-    const rulesContent = styleEngine.loadRules();
-    const templatesContent = styleEngine.loadTemplates();
+    const rulesContent = styleEngine.loadRules(profile);
+    let effectiveRulesContent = rulesContent;
+    if (leadMediaCandidate) {
+      effectiveRulesContent += `\n\n## Source-first mode\n- Rewrite only the exact source post tied to the image.\n- Do not mix another story from the cluster.\n- Text and image must describe the same event.\n- Anchor keywords: ${JSON.stringify(sourceContext.anchorKeywords || [])}`;
+    }
+    if (type === 'weekly') {
+      effectiveRulesContent += '\n\n## Weekly mode\n- Summarize the strongest events from the last 7 days.\n- Use 2-4 distinct events if enough data exists.\n- Do not turn one single event into a fake weekly overview.\n- If the input only has one real event, frame it as the main event of the week and keep the post compact.\n- Keep temporal sanity: if an item appeared for a holiday or was removed within 1-2 days, describe it as a short-lived event, not as a historic tragedy or permanent loss.\n- Do not invent permanence, collector panic, or long-term market meaning unless the source explicitly states it.';
+    }
+    const templatesContent = styleEngine.loadTemplates(profile);
+    const humanizerRulesContent = styleEngine.loadHumanizerRules(profile);
+    const prompt = this._buildPrompt(
+      type,
+      effectiveRulesContent,
+      templatesContent,
+      humanizerRulesContent,
+      sourceContext.clustersForPrompt,
+      webData,
+      sentiment,
+      trends,
+      leadMediaCandidate,
+      sourceContext,
+      enforceCaptionForSourceMedia,
+    );
 
-    // 2. Build the mega-prompt
-    const prompt = this._buildPrompt(type, rulesContent, templatesContent, clusters, webData, sentiment, trends);
-
-    // 3. Call AI with retries on validation failure
     let result = null;
     let validationResult = null;
     let attempts = 0;
 
     while (attempts <= MAX_RETRIES) {
       try {
-        if (attempts === 0) {
-          result = await aiProvider.generateJSON(prompt);
+        if (attempts === 0 || !result || !validationResult?.issues?.length) {
+          result = await aiProvider.generateJSON(prompt, { temperature: 0.55 });
         } else {
-          // Re-prompt with validation issues
-          const fixPrompt = this._buildFixPrompt(result, validationResult.issues, type, rulesContent);
-          result = await aiProvider.generateJSON(fixPrompt);
+          const fixPrompt = this._buildFixPrompt(
+            result,
+            validationResult.issues,
+            type,
+            effectiveRulesContent,
+            humanizerRulesContent,
+            leadMediaCandidate,
+            enforceCaptionForSourceMedia,
+          );
+          result = await aiProvider.generateJSON(fixPrompt, { temperature: 0.2 });
         }
+
+        result.text = this._enforceEmojiLimit(result.text || '', 2);
       } catch (err) {
-        logger.error(`PostGenerator: ошибка AI генерации (попытка ${attempts + 1}) — ${err.message}`);
+        logger.error(`PostGenerator: AI generation failed (attempt ${attempts + 1}) - ${err.message}`);
         attempts++;
         continue;
       }
 
       const postText = result.text || '';
-
-      // 5. Validate
       validationResult = styleEngine.validatePost(postText, type);
+      validationResult = this._appendCaptionIssue(
+        validationResult,
+        postText,
+        enforceCaptionForSourceMedia ? leadMediaCandidate : null,
+      );
+      validationResult = this._appendSourceAlignmentIssue(
+        validationResult,
+        postText,
+        leadMediaCandidate ? sourceContext : null,
+      );
 
       if (validationResult.valid) {
-        logger.info(`PostGenerator: пост типа "${type}" прошёл валидацию (попытка ${attempts + 1})`);
+        logger.info(`PostGenerator: post type "${type}" passed validation (attempt ${attempts + 1})`);
         break;
       }
 
-      logger.warn(`PostGenerator: валидация не пройдена (попытка ${attempts + 1}): ${validationResult.issues.join('; ')}`);
+      logger.warn(`PostGenerator: validation failed (attempt ${attempts + 1}): ${validationResult.issues.join('; ')}`);
       attempts++;
     }
 
     if (!result || !result.text) {
-      logger.error('PostGenerator: не удалось сгенерировать пост после всех попыток');
+      logger.error('PostGenerator: failed to generate post after all retries');
       return {
         text: '',
-        media: { type: 'none', path: null },
+        media: { type: 'none', path: null, paths: [] },
         keyboard: [],
         hashtags: '',
         postType: type,
       };
     }
 
-    // 7. Format for Telegram HTML
-    const formattedText = formatBuilder.buildTelegramHTML(result.text);
+    const formattedText = this._applySourceCustomEmojiMarkup(
+      formatBuilder.buildTelegramHTML(result.text),
+      leadMediaCandidate,
+    );
 
-    // 8. Select media
-    const media = await mediaHandler.selectMedia(clusters);
+    let media = { type: 'none', path: null, paths: [] };
+    if (leadMediaCandidate) {
+      const sourcePaths = Array.isArray(leadMediaCandidate.paths)
+        ? leadMediaCandidate.paths.filter(Boolean).slice(0, 10)
+        : [leadMediaCandidate.path].filter(Boolean);
 
-    // 9. Build keyboard if links are available
-    const keyboard = [];
-    if (result.hashtags) {
-      // Could add source links as buttons here
+      media = {
+        type: 'photo',
+        path: sourcePaths[0] || null,
+        paths: sourcePaths,
+      };
+
+      logger.info(
+        `PostGenerator: source-first media selected from ${leadMediaCandidate.channel} post=${leadMediaCandidate.telegramPostId} count=${sourcePaths.length}`,
+      );
+    } else {
+      logger.info('PostGenerator: no reliable source image found, sending text-only');
     }
 
     return {
       text: formattedText,
       media,
-      keyboard,
+      keyboard: [],
       hashtags: result.hashtags || '',
       postType: result.post_type || type,
+      _leadMediaCandidate: leadMediaCandidate,
+      _profileId: profile?.id || analysisData?.profileId || 'default',
+      _profileTitle: profile?.title || 'Default channel',
+      _targetChannelId: profile?.telegramChannelId || '',
     };
   }
 
-  /**
-   * Build the main generation prompt.
-   */
-  _buildPrompt(type, rulesContent, templatesContent, clusters, webData, sentiment, trends) {
+  _buildPrompt(
+    type,
+    rulesContent,
+    templatesContent,
+    humanizerRulesContent,
+    clusters,
+    webData,
+    sentiment,
+    trends,
+    leadMediaCandidate,
+    sourceContext = null,
+    enforceCaptionForSourceMedia = false,
+  ) {
     const typeNames = {
       digest: 'Дайджест (утро/вечер)',
       analysis: 'Аналитика',
@@ -101,66 +167,95 @@ class PostGenerator {
     };
 
     const typeName = typeNames[type] || type;
+    const compactClusters = this._compactClusters(clusters);
+    const compactWebData = this._compactValue(webData, 0, 10);
+    const compactSentiment = this._compactValue(sentiment, 0, 8);
+    const compactTrends = this._compactValue(trends, 0, 8);
+    const compactLeadMedia = leadMediaCandidate ? {
+      channel: leadMediaCandidate.channel,
+      telegramPostId: leadMediaCandidate.telegramPostId,
+      views: leadMediaCandidate.views,
+      origin: leadMediaCandidate.origin,
+      mediaCount: Array.isArray(leadMediaCandidate.paths) ? leadMediaCandidate.paths.length : 1,
+      sourceText: this._truncateText(leadMediaCandidate.text, 700),
+    } : null;
+    const sourceFocusInstruction = leadMediaCandidate
+      ? `\nSOURCE-FIRST MODE:\nYou are rewriting exactly one source-post with image(s). Do not mix in another story from the cluster. Text and media must describe the same event.\nAnchor keywords: ${JSON.stringify(sourceContext?.anchorKeywords || [])}\n`
+      : '\n';
+    const captionConstraintInstruction = (leadMediaCandidate && enforceCaptionForSourceMedia)
+      ? `\nCAPTION MODE:\nThis source-post will be published with media in a single Telegram caption. Keep the visible text within ${CAPTION_SAFE_TEXT_LIMIT} chars.\n`
+      : '\n';
+    const weeklyInstruction = type === 'weekly'
+      ? `\nWEEKLY MODE:\nThis post must summarize the strongest events from the last 7 days, not expand one single case into an article.\nUse 2-4 distinct events if enough data exists.\nIf there is only one real event in the input, keep the post short and frame it as the main event of the week.\nKeep temporal sanity: if something appeared for a holiday and disappeared within 1-2 days, describe it plainly as a short-lived event.\nDo not turn a brief removal into tragedy, legend, or irreversible loss unless the source explicitly confirms permanence.\n`
+      : '\n';
 
-    return `Ты — автор крипто-канала, специализирующегося на Solana и DeFi. Пишешь на русском языке.
+    return `Ты — редактор Telegram-канала о крипте. Тема поста определяется правилами канала, кластерами новостей, подключёнными каналами и веб-данными.
 
-═══════════════════════════════
 ПРАВИЛА НАПИСАНИЯ ПОСТОВ:
-═══════════════════════════════
-${rulesContent || 'Правила не загружены. Пиши в стиле информативного крипто-канала.'}
+${rulesContent || 'Правила не загружены. Пиши в стиле информативного Telegram-канала.'}
 
-═══════════════════════════════
 ШАБЛОНЫ ПОСТОВ:
-═══════════════════════════════
 ${templatesContent || 'Шаблоны не загружены.'}
 
-═══════════════════════════════
+ПРАВИЛА ОЧЕЛОВЕЧИВАНИЯ:
+${humanizerRulesContent || 'Сделай текст живым, конкретным и естественным, без канцелярита и рекламных штампов.'}
+
 ЗАДАНИЕ:
-═══════════════════════════════
-Напиши пост типа: **${typeName}**
-
+Напиши пост типа: ${typeName}
 Используй шаблон для этого типа поста из раздела "ШАБЛОНЫ ПОСТОВ" выше.
-
-═══════════════════════════════
+Текст должен звучать как живой пост в Telegram, а не как пресс-релиз или нейтральная заметка.
+${sourceFocusInstruction}${captionConstraintInstruction}${weeklyInstruction}
 ДАННЫЕ ДЛЯ ПОСТА:
-═══════════════════════════════
 
-📊 Кластеры новостей (отсортированы по важности):
-${JSON.stringify(clusters, null, 2)}
+Кластеры новостей:
+${JSON.stringify(compactClusters, null, 2)}
 
-🌐 Данные из веб-источников:
-${JSON.stringify(webData, null, 2)}
+Веб-данные:
+${JSON.stringify(compactWebData, null, 2)}
 
-📈 Настроение рынка:
-${JSON.stringify(sentiment, null, 2)}
+Настроение рынка:
+${JSON.stringify(compactSentiment, null, 2)}
 
-🔥 Актуальные тренды:
-${JSON.stringify(trends, null, 2)}
+Тренды:
+${JSON.stringify(compactTrends, null, 2)}
 
-═══════════════════════════════
+Опорный source-post с картинкой:
+${JSON.stringify(compactLeadMedia, null, 2)}
+
 ТРЕБОВАНИЯ К ОТВЕТУ:
-═══════════════════════════════
-Верни JSON объект со следующими полями:
+Верни JSON-объект со следующими полями:
 {
-  "text": "полный текст поста с HTML-разметкой для Telegram (теги: <b>, <i>, <code>, <a href='...'>)",
+  "text": "полный текст поста с HTML-разметкой для Telegram",
   "media_suggestion": "описание подходящего изображения для поста или null",
   "hashtags": "хештеги через пробел",
   "post_type": "${type}"
 }
 
 Важно:
-- Пиши ТОЛЬКО на русском языке
-- Используй 3-7 эмодзи
-- НЕ начинай пост с "Друзья", "Итак", "Добрый день"
-- НЕ используй фразы: "в данной статье", "следует отметить", "как мы все знаем", "безусловно", "резюмируя", "guaranteed", "to the moon"
+- Пиши только на русском языке
+- Используй 1-2 эмодзи на весь пост
+- Если дан source-post с картинкой, перепиши именно его фактическое ядро в новом тоне, а не уходи в другую тему
+- Если дан source-post с картинкой для короткого формата digest/alert, текст должен помещаться в одну Telegram caption, цель: не более ${CAPTION_SAFE_TEXT_LIMIT} символов
+- Не начинай пост с "Друзья", "Итак", "Добрый день"
+- Не используй фразы: "в данной статье", "следует отметить", "как мы все знаем", "безусловно", "резюмируя", "guaranteed", "to the moon"
+- Не выдумывай новые факты, ссылки, цифры и источники
+- Если свежие timestamped веб-данные конфликтуют со старыми постами, опирайся на более свежие данные
+- Не сравнивай старые и новые метрики без точной даты или явного таймфрейма из источника
+- Сохраняй фактуру входных данных и не уводи пост в сторону от главной темы входного набора
 - Соблюдай лимиты длины для типа "${type}"
-- Верни ТОЛЬКО JSON, без дополнительного текста`;
+- Верни только JSON, без дополнительного текста`;
   }
 
-  /**
-   * Build a fix prompt when validation fails.
-   */
-  _buildFixPrompt(previousResult, issues, type, rulesContent) {
+  _buildFixPrompt(previousResult, issues, type, rulesContent, humanizerRulesContent, leadMediaCandidate, enforceCaptionForSourceMedia) {
+    const mediaModeHint = leadMediaCandidate
+      ? (
+        enforceCaptionForSourceMedia
+          ? `Если сохраняется опорный source-post с картинкой, ужми текст до ${CAPTION_SAFE_TEXT_LIMIT} символов и верни фокус к фактическому ядру этого source-post.`
+          : 'Если сохраняется опорный source-post с картинкой, верни фокус к фактическому ядру этого source-post и не уводи текст от визуала.'
+      )
+      : 'Если текст слишком раздут, ужми его без потери основных фактов.';
+    const numberLayoutHint = 'Если в посте есть офферы, сумма сделки, потеря или две валюты для одного и того же факта, не ставь их голыми строками друг под другом. Собирай в один читаемый блок: `— 100 000 ⭐️ (~1 400 TON)`.';
+
     return `Предыдущая версия поста не прошла валидацию. Исправь следующие проблемы:
 
 Проблемы:
@@ -169,20 +264,230 @@ ${issues.map((issue, i) => `${i + 1}. ${issue}`).join('\n')}
 Предыдущий текст поста:
 ${previousResult.text || ''}
 
-Правила:
+Правила постов:
 ${rulesContent || ''}
+
+Правила очеловечивания:
+${humanizerRulesContent || ''}
 
 Тип поста: ${type}
 
-Исправь текст и верни JSON объект с полями:
+Исправь текст так, чтобы он звучал как живой пост редактора, а не как AI-черновик. Сохрани факты, цифры, HTML-теги и общий смысл. Если в тексте больше двух эмодзи, убери лишние. ${mediaModeHint} ${numberLayoutHint} Если есть сравнение старой и новой метрики без точной даты или явного таймфрейма, убери такое сравнение.
+
+Верни JSON-объект с полями:
 {
   "text": "исправленный текст поста",
-  "media_suggestion": "${previousResult.media_suggestion || 'null'}",
-  "hashtags": "${previousResult.hashtags || ''}",
+  "media_suggestion": ${JSON.stringify(previousResult.media_suggestion ?? null)},
+  "hashtags": ${JSON.stringify(previousResult.hashtags || '')},
   "post_type": "${type}"
 }
 
-Верни ТОЛЬКО JSON, без дополнительного текста.`;
+Верни только JSON, без дополнительного текста.`;
+  }
+
+  _compactClusters(clusters) {
+    return (Array.isArray(clusters) ? clusters : [])
+      .slice(0, 5)
+      .map((cluster, index) => ({
+        rank: index + 1,
+        topic: cluster.topic || '',
+        summary: this._truncateText(cluster.summary, 260),
+        keyFacts: Array.isArray(cluster.keyFacts)
+          ? cluster.keyFacts.slice(0, 4).map((fact) => this._truncateText(fact, 180))
+          : [],
+        sources: Array.isArray(cluster.sources) ? cluster.sources.slice(0, 5) : [],
+        viewsTotal: cluster.viewsTotal || 0,
+        postCount: cluster.postCount || (Array.isArray(cluster.postIds) ? cluster.postIds.length : 0),
+      }));
+  }
+
+  _compactValue(value, depth = 0, limit = 8) {
+    if (value == null) {
+      return value;
+    }
+
+    if (typeof value === 'string') {
+      return this._truncateText(value, 280);
+    }
+
+    if (typeof value !== 'object') {
+      return value;
+    }
+
+    if (depth >= 3) {
+      if (Array.isArray(value)) {
+        return value
+          .slice(0, Math.min(limit, 5))
+          .map((item) => this._compactValue(item, depth + 1, 5));
+      }
+
+      return Object.fromEntries(
+        Object.entries(value)
+          .slice(0, Math.min(limit, 6))
+          .map(([key, nestedValue]) => [key, this._compactValue(nestedValue, depth + 1, 5)]),
+      );
+    }
+
+    if (Array.isArray(value)) {
+      return value
+        .slice(0, limit)
+        .map((item) => this._compactValue(item, depth + 1, Math.max(4, limit - 2)));
+    }
+
+    return Object.fromEntries(
+      Object.entries(value)
+        .slice(0, limit)
+        .map(([key, nestedValue]) => [key, this._compactValue(nestedValue, depth + 1, Math.max(4, limit - 2))]),
+    );
+  }
+
+  _truncateText(value, maxLength = 280) {
+    const text = String(value || '');
+    if (text.length <= maxLength) {
+      return text;
+    }
+
+    return `${text.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`;
+  }
+
+  _appendCaptionIssue(validationResult, postText, leadMediaCandidate) {
+    const visibleLength = formatBuilder.getTelegramEntityLength(postText);
+    if (!leadMediaCandidate || visibleLength <= CAPTION_SAFE_TEXT_LIMIT) {
+      return validationResult;
+    }
+
+    const issues = [
+      ...(validationResult?.issues || []),
+      `Текст не помещается в подпись к одному source-post: ${visibleLength} символов при целевом лимите ${CAPTION_SAFE_TEXT_LIMIT}`,
+    ];
+
+    return {
+      valid: false,
+      issues: [...new Set(issues)],
+    };
+  }
+
+  _appendSourceAlignmentIssue(validationResult, postText, sourceContext) {
+    if (!sourceContext?.leadMediaCandidate || !sourceContext?.anchorKeywords?.length) {
+      return validationResult;
+    }
+
+    const normalized = this._normalizeForKeywordMatch(postText);
+    const overlaps = sourceContext.anchorKeywords.filter((keyword) => normalized.includes(keyword));
+    const minRequired = Math.min(2, sourceContext.anchorKeywords.length);
+    if (overlaps.length >= minRequired) {
+      return validationResult;
+    }
+
+    return {
+      valid: false,
+      issues: [...new Set([
+        ...(validationResult?.issues || []),
+        `Текст с картинкой слабо совпадает с source-post: найдено ${overlaps.length} ключевых маркеров из ${sourceContext.anchorKeywords.length}`,
+      ])],
+    };
+  }
+
+  _buildSourceContext(leadMediaCandidate, clusters = []) {
+    if (!leadMediaCandidate) {
+      return {
+        leadMediaCandidate: null,
+        clustersForPrompt: Array.isArray(clusters) ? clusters : [],
+        anchorKeywords: [],
+      };
+    }
+
+    const list = Array.isArray(clusters) ? clusters : [];
+    const sourceCluster = list.find((cluster) =>
+      Array.isArray(cluster.postIds) && cluster.postIds.includes(leadMediaCandidate.telegramPostId)
+    );
+
+    return {
+      leadMediaCandidate,
+      clustersForPrompt: sourceCluster ? [sourceCluster] : [],
+      anchorKeywords: this._extractAnchorKeywords(leadMediaCandidate.text),
+    };
+  }
+
+  _extractAnchorKeywords(text) {
+    return [...new Set(
+      this._normalizeForKeywordMatch(text)
+        .split(/\s+/)
+        .map((word) => word.trim())
+        .filter((word) => word.length >= 4 && !SOURCE_STOP_WORDS.has(word))
+    )].slice(0, 8);
+  }
+
+  _normalizeForKeywordMatch(text) {
+    return String(text || '')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/https?:\/\/\S+/g, ' ')
+      .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .toLowerCase();
+  }
+
+  _enforceEmojiLimit(text, maxCount = 2) {
+    if (!text) {
+      return text;
+    }
+
+    let seen = 0;
+    return text
+      .replace(EMOJI_REGEX, (match) => {
+        seen += 1;
+        return seen <= maxCount ? match : '';
+      })
+      .replace(/[ \t]{2,}/g, ' ')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+  }
+
+  _applySourceCustomEmojiMarkup(htmlText, leadMediaCandidate) {
+    if (!htmlText || !leadMediaCandidate?.entities || !leadMediaCandidate?.text) {
+      return htmlText;
+    }
+
+    let entities;
+    try {
+      entities = JSON.parse(leadMediaCandidate.entities);
+    } catch {
+      return htmlText;
+    }
+
+    const sourceText = String(leadMediaCandidate.text || '');
+    const emojiMap = new Map();
+
+    for (const entity of entities) {
+      if (!entity || !String(entity.type || '').includes('CustomEmoji') || !entity.documentId) {
+        continue;
+      }
+
+      const offset = Number(entity.offset) || 0;
+      const length = Number(entity.length) || 0;
+      const emojiChar = sourceText.slice(offset, offset + length);
+      if (!emojiChar || emojiMap.has(emojiChar)) {
+        continue;
+      }
+
+      emojiMap.set(emojiChar, String(entity.documentId));
+    }
+
+    if (emojiMap.size === 0) {
+      return htmlText;
+    }
+
+    let enriched = htmlText;
+    for (const [emojiChar, documentId] of emojiMap.entries()) {
+      const escaped = emojiChar.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      enriched = enriched.replace(
+        new RegExp(escaped, 'g'),
+        `<tg-emoji emoji-id="${documentId}">${emojiChar}</tg-emoji>`,
+      );
+    }
+
+    return enriched;
   }
 }
 

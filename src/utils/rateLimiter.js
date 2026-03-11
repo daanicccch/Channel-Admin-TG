@@ -35,7 +35,6 @@ class RateLimiter {
 // Singleton с предустановленными лимитами
 const rateLimiter = new RateLimiter();
 rateLimiter.register('gemini', 10, 60_000);       // 10 RPM
-rateLimiter.register('qwen', 30, 60_000);          // 30 RPM
 rateLimiter.register('coingecko', 30, 60_000);     // 30 RPM
 rateLimiter.register('defillama', 60, 60_000);     // щедрый
 rateLimiter.register('birdeye', 10, 60_000);       // 10 RPM

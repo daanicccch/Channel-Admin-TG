@@ -1,0 +1,10 @@
+.git
+.gitignore
+.claude
+node_modules
+npm-debug.log*
+docker-compose*.yml
+.env
+logs/*.log
+data/bot.db
+data/media_cache

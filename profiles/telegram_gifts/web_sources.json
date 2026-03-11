@@ -1,0 +1,20 @@
+{
+  "apis": [
+    {
+      "name": "giftstat",
+      "base_url": "https://giftstat.com",
+      "indexes_url": "https://giftstat.com/giftindexes"
+    },
+    {
+      "name": "giftcharts",
+      "base_url": "https://giftcharts.com",
+      "home_url": "https://giftcharts.com/ru"
+    },
+    {
+      "name": "peek",
+      "base_url": "https://peek.tg",
+      "stats_url": "https://peek.tg/stats",
+      "transfers_url": "https://peek.tg/transfers"
+    }
+  ]
+}
