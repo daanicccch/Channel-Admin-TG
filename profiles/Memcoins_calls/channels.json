@@ -71,6 +71,15 @@
 "category": "memcoins",
 "scrape_interval_minutes": 10,
 "is_check": false
+},
+{
+  "username": "GiftsNewsAITest",
+  "name": "Gifts News",
+  "priority": "high",
+  "language": "ru",
+  "category": "telegram_gifts",
+  "scrape_interval_minutes": 10,
+  "is_check": true
 }
 ],
 "settings": {
