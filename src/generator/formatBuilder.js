@@ -20,12 +20,15 @@ function normalizeMarkdownToHTML(text) {
 
   let normalized = String(text).replace(/\r\n/g, '\n');
 
+  normalized = normalized.replace(/(^|\n)\*\s+/g, '$1• ');
   normalized = normalized.replace(/```([\s\S]*?)```/g, (_, code) => `<pre>${escapeHTML(code.trim())}</pre>`);
   normalized = normalized.replace(/`([^`\n]+)`/g, (_, code) => `<code>${escapeHTML(code)}</code>`);
   normalized = normalized.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2">$1</a>');
   normalized = normalized.replace(/\*\*([^*\n][\s\S]*?)\*\*/g, '<b>$1</b>');
+  normalized = normalized.replace(/(^|[^\w*])\*([^*\n][\s\S]*?)\*(?=[^\w*]|$)/g, '$1<i>$2</i>');
   normalized = normalized.replace(/__([^_\n][\s\S]*?)__/g, '<i>$1</i>');
   normalized = normalized.replace(/~~([^~\n][\s\S]*?)~~/g, '<tg-spoiler>$1</tg-spoiler>');
+  normalized = normalized.replace(/(^|\s)\*(?=\s|$)/g, '$1');
 
   return normalized;
 }
