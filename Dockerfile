@@ -16,6 +16,7 @@ COPY --from=builder /app/node_modules ./node_modules
 COPY package*.json ./
 COPY src ./src
 COPY data ./data
+COPY profiles ./profiles
 COPY rules ./rules
 COPY .env.example ./.env.example
 COPY README.md ./README.md
