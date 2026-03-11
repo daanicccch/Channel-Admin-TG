@@ -261,6 +261,7 @@ function markPostPublished(postId, messageId) {
 }
 
 module.exports = {
+  buildEventFingerprint,
   buildMemoryPrompt,
   findSimilarPost,
   getRecentPosts,

@@ -1,0 +1,19 @@
+{
+"apis": [
+{
+"name": "gmgn",
+"base_url": "https://gmgn.ai/?chain=sol",
+"api_url": "https://gmgn.ai/trend/V1lrhVqS?chain=sol"
+},
+{
+"name": "dexscreener",
+"base_url": "https://dexscreener.com/",
+"api_url": "https://dexscreener.com/"
+},
+{
+"name": "solscan",
+"base_url": "https://solscan.io/",
+"api_url": "https://solscan.io/"
+}
+]
+}
