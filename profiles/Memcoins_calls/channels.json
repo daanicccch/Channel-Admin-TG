@@ -1,0 +1,73 @@
+{
+"channels": [
+{
+"username": "spidersjournal",
+"name": "Spider's Journal",
+"priority": "high",
+"language": "ru",
+"category": "memcoins",
+"scrape_interval_minutes": 10
+},
+{
+"username": "dumbmoney",
+"name": "Dumb Money",
+"priority": "high",
+"language": "ru",
+"category": "memcoins",
+"scrape_interval_minutes": 10
+},
+{
+"username": "culturecalls",
+"name": "Culture Calls",
+"priority": "high",
+"language": "ru",
+"category": "memcoins",
+"scrape_interval_minutes": 10
+},
+{
+"username": "haltmoves",
+"name": "Halt Moves",
+"priority": "high",
+"language": "ru",
+"category": "memcoins",
+"scrape_interval_minutes": 10
+},
+{
+"username": "DoxxedChannel",
+"name": "Doxxed Channel",
+"priority": "high",
+"language": "ru",
+"category": "memcoins",
+"scrape_interval_minutes": 10
+},
+{
+"username": "trishhhxy",
+"name": "Trishhhxy",
+"priority": "high",
+"language": "ru",
+"category": "memcoins",
+"scrape_interval_minutes": 10
+},
+{
+"username": "ZAGREBIAN",
+"name": "ZAGREBIAN",
+"priority": "high",
+"language": "ru",
+"category": "memcoins",
+"scrape_interval_minutes": 10
+},
+{
+"username": "sarahonchain",
+"name": "Sarah Onchain",
+"priority": "high",
+"language": "ru",
+"category": "memcoins",
+"scrape_interval_minutes": 10
+}
+],
+"settings": {
+"max_posts_per_channel": 50,
+"lookback_hours": 24,
+"min_views_threshold": 100
+}
+}
