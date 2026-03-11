@@ -32,6 +32,54 @@ function fileExists(filePath) {
   }
 }
 
+function listProfileEntries(rootDir, diagnostics = []) {
+  if (!fileExists(rootDir)) {
+    diagnostics.push(`profiles root not found: ${rootDir}`);
+    return [];
+  }
+
+  let entries;
+  try {
+    entries = fs.readdirSync(rootDir, { withFileTypes: true });
+  } catch (err) {
+    diagnostics.push(`failed to read profiles root ${rootDir}: ${err.message}`);
+    return [];
+  }
+
+  const result = [];
+
+  for (const entry of entries) {
+    const entryPath = path.join(rootDir, entry.name);
+    const isDirectory = entry.isDirectory();
+    const isSymlink = entry.isSymbolicLink();
+
+    if (isDirectory) {
+      diagnostics.push(`profiles entry "${entry.name}": directory`);
+      result.push({ name: entry.name, path: entryPath, kind: 'directory' });
+      continue;
+    }
+
+    if (isSymlink) {
+      try {
+        const stat = fs.statSync(entryPath);
+        if (stat.isDirectory()) {
+          diagnostics.push(`profiles entry "${entry.name}": symlink-directory`);
+          result.push({ name: entry.name, path: entryPath, kind: 'symlink-directory' });
+          continue;
+        }
+        diagnostics.push(`profiles entry "${entry.name}": symlink-non-directory skipped`);
+      } catch (err) {
+        diagnostics.push(`profiles entry "${entry.name}": broken symlink skipped (${err.message})`);
+      }
+      continue;
+    }
+
+    diagnostics.push(`profiles entry "${entry.name}": non-directory skipped`);
+  }
+
+  return result;
+}
+
 function loadSourceChannelsFromPath(filePath, baseDir = config.paths.root) {
   if (!filePath) return [];
   const resolvedPath = resolvePathMaybe(filePath, baseDir);
@@ -161,15 +209,9 @@ function normalizeProfile(rawProfile, baseDir = config.paths.root) {
 }
 
 function loadProfilesFromDirectories(diagnostics = []) {
-  if (!fileExists(PROFILES_ROOT)) {
-    diagnostics.push(`profiles root not found: ${PROFILES_ROOT}`);
-    return [];
-  }
-
-  return fs.readdirSync(PROFILES_ROOT, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory())
+  return listProfileEntries(PROFILES_ROOT, diagnostics)
     .map((entry) => {
-      const profileDir = path.join(PROFILES_ROOT, entry.name);
+      const profileDir = entry.path;
       const profileFile = path.join(profileDir, 'profile.json');
       if (!fileExists(profileFile)) {
         diagnostics.push(`skipped "${entry.name}": missing profile.json at ${profileFile}`);
