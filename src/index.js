@@ -1,4 +1,4 @@
-const { initDb, closeDb } = require('./config');
+const { config, initDb, closeDb } = require('./config');
 const logger = require('./utils/logger');
 const TelegramScraper = require('./scraper/telegramScraper');
 const WebScraper = require('./scraper/webScraper');
