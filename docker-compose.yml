@@ -10,8 +10,16 @@ services:
     environment:
       NODE_ENV: ${NODE_ENV:-production}
     volumes:
-      - ./.env:/app/.env
-      - ./data:/app/data
-      - ./logs:/app/logs
-      - ./profiles:/app/profiles
+      - type: bind
+        source: ./.env
+        target: /app/.env
+      - type: bind
+        source: ${DATA_DIR:-./data}
+        target: /app/data
+      - type: bind
+        source: ${LOGS_DIR:-./logs}
+        target: /app/logs
+      - type: bind
+        source: ${PROFILES_DIR:-./profiles}
+        target: /app/profiles
     command: ["npm", "start"]
