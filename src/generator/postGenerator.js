@@ -101,6 +101,7 @@ class PostGenerator {
         profileId,
         type,
         recentPosts,
+        sourceContext,
       );
 
       if (validationResult.valid) {
@@ -154,6 +155,7 @@ class PostGenerator {
       hashtags: result.hashtags || '',
       postType: result.post_type || type,
       _leadMediaCandidate: leadMediaCandidate,
+      _eventFingerprint: sourceContext?.eventFingerprint || null,
       _profileId: profileId,
       _profileTitle: profile?.title || 'Default channel',
       _targetChannelId: profile?.telegramChannelId || '',
@@ -426,13 +428,16 @@ ${memoryPrompt}
     };
   }
 
-  _appendSimilarityIssue(validationResult, postText, profileId, type, recentPosts = []) {
+  _appendSimilarityIssue(validationResult, postText, profileId, type, recentPosts = [], sourceContext = null) {
     const issues = Array.isArray(validationResult?.issues) ? [...validationResult.issues] : [];
-    const similarPost = postStore.findSimilarPost(postText, profileId, type, { recentPosts });
+    const similarPost = postStore.findSimilarPost(postText, profileId, type, {
+      recentPosts,
+      currentEventFingerprint: sourceContext?.eventFingerprint || null,
+    });
 
     if (similarPost) {
       issues.push(
-        `Текст слишком похож на недавний пост [${similarPost.type}] "${similarPost.title}" (similarity=${similarPost.score.toFixed(2)}). Нужен другой угол, заголовок и первая подводка.`,
+        `Текст слишком похож на недавний пост [${similarPost.type}] "${similarPost.title}" (similarity=${similarPost.score.toFixed(2)}${similarPost.eventType ? `, event=${similarPost.eventType}` : ''}). Нужен другой угол, заголовок и первая подводка.`,
       );
     }
 
@@ -448,6 +453,7 @@ ${memoryPrompt}
         leadMediaCandidate: null,
         clustersForPrompt: Array.isArray(clusters) ? clusters : [],
         anchorKeywords: [],
+        eventFingerprint: null,
       };
     }
 
@@ -460,6 +466,13 @@ ${memoryPrompt}
       leadMediaCandidate,
       clustersForPrompt: sourceCluster ? [sourceCluster] : [],
       anchorKeywords: this._extractAnchorKeywords(leadMediaCandidate.text),
+      eventFingerprint: postStore.buildEventFingerprint({
+        text: leadMediaCandidate.text,
+        topic: sourceCluster?.topic || '',
+        summary: sourceCluster?.summary || '',
+        keyFacts: sourceCluster?.keyFacts || [],
+        entities: this._extractAnchorKeywords(leadMediaCandidate.text),
+      }),
     };
   }
 

@@ -96,6 +96,7 @@ async function generateFromAnalysis(postType = 'digest', analysisData = {}, opti
       trends: Array.isArray(analysisData.trends) ? analysisData.trends.slice(0, 10) : [],
       sentiment: analysisData.sentiment || {},
     },
+    eventFingerprint: post._eventFingerprint || null,
   });
 
   logger.info(`Post generated for profile=${profile.id}`);
