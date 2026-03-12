@@ -127,9 +127,23 @@ function makePendingEntry(post, type, mediaCount = DEFAULT_MEDIA_COUNT, sourceHi
   };
 }
 
+function formatSourceLine(post) {
+  const candidate = post?._leadMediaCandidate || null;
+  if (!candidate) {
+    return 'Source: n/a';
+  }
+
+  const channel = String(candidate.channel || 'unknown');
+  const telegramPostId = Number(candidate.telegramPostId) || 0;
+  const origin = String(candidate.origin || 'unknown');
+  const score = Number.isFinite(Number(candidate.totalScore)) ? Number(candidate.totalScore) : null;
+
+  return `Source: <code>${channel}/${telegramPostId}</code> (${origin}${score !== null ? `, score=${score}` : ''})`;
+}
+
 async function sendPreview(bot, chatId, entry, id, title = '<b>Preview</b>') {
   const previewText = entry.post.text.length > 3500 ? `${entry.post.text.slice(0, 3500)}...` : entry.post.text;
-  const header = `${title} (${entry.profileTitle}, ID: ${id}, type: ${entry.type})`;
+  const header = `${title} (${entry.profileTitle}, ID: ${id}, type: ${entry.type})\n${formatSourceLine(entry.post)}`;
   const keyboard = previewKeyboard(id, entry.type, entry.mediaCount);
   const mediaPaths = getMediaPaths(entry.post);
 
@@ -415,7 +429,10 @@ function setupCommands(bot, { generateOnly, generateFromAnalysis, publisher }) {
       analysisData.clusters,
       entry.sourceHistory || [],
       entry.post.text || '',
-      { profileId: entry.profileId },
+      {
+        profileId: entry.profileId,
+        currentChannel: entry.post?._leadMediaCandidate?.channel || '',
+      },
     );
     if (!sourceOverride) return ctx.answerCbQuery('No alternative source posts');
 

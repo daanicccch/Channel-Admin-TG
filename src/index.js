@@ -146,6 +146,37 @@ function buildLeadMediaOverride(sourcePost) {
   };
 }
 
+function interleavePostsByChannel(posts = []) {
+  const buckets = new Map();
+  const channelOrder = [];
+
+  for (const post of (posts || [])) {
+    const channelKey = String(post?.channel || '').trim() || 'unknown';
+    if (!buckets.has(channelKey)) {
+      buckets.set(channelKey, []);
+      channelOrder.push(channelKey);
+    }
+    buckets.get(channelKey).push(post);
+  }
+
+  const interleaved = [];
+  let added = true;
+
+  while (added) {
+    added = false;
+    for (const channelKey of channelOrder) {
+      const bucket = buckets.get(channelKey) || [];
+      if (bucket.length === 0) {
+        continue;
+      }
+      interleaved.push(bucket.shift());
+      added = true;
+    }
+  }
+
+  return interleaved;
+}
+
 async function generateFromAnalysis(postType = 'post', analysisData = {}, options = {}) {
   const profile = resolveProfile(options.profileId || analysisData.profileId);
 
@@ -217,8 +248,10 @@ async function generateOnly(postType = 'post', options = {}) {
       channelTitle: channelResult.channelTitle,
     }))
   );
+  const diversifiedPosts = interleavePostsByChannel(posts);
 
   logger.info(`Collected ${posts.length} source posts for profile=${profile.id}`);
+  logger.info(`Diversified source stream for profile=${profile.id}: channels=${new Set(diversifiedPosts.map((post) => post.channel)).size}`);
 
   try {
     await scraper.disconnect();
@@ -230,7 +263,7 @@ async function generateOnly(postType = 'post', options = {}) {
 
   logger.info(`Stage: analyze [${profile.id}]`);
   const contentAnalyzer = new ContentAnalyzer();
-  const clusters = await contentAnalyzer.analyze(posts, webData);
+  const clusters = await contentAnalyzer.analyze(diversifiedPosts, webData);
 
   const trendDetector = new TrendDetector();
   const trends = await trendDetector.detectTrends(clusters, webData);

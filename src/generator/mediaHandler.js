@@ -326,6 +326,17 @@ function rankUnusedFirst(candidates, excludedSourceKeys = []) {
   };
 }
 
+function pickPreferredAlternative(candidates, currentChannel = '') {
+  const normalizedCurrentChannel = String(currentChannel || '').trim().toLowerCase();
+  if (!normalizedCurrentChannel) {
+    return candidates[0] || null;
+  }
+
+  return candidates.find((candidate) => String(candidate.channel || '').trim().toLowerCase() !== normalizedCurrentChannel)
+    || candidates[0]
+    || null;
+}
+
 async function selectMedia(clusters, postText = '', desiredCount = MAX_MEDIA_PER_POST, options = {}) {
   const count = Math.max(0, Math.min(desiredCount || MAX_MEDIA_PER_POST, 10));
   if (count === 0) {
@@ -374,9 +385,12 @@ function selectAlternativeLeadMediaPost(clusters, excludedSources = [], postText
   const scored = getRankedCandidates(clusters, postText, options);
   const excludeSet = new Set((excludedSources || []).filter(Boolean));
   const { unused, available } = rankUnusedFirst(scored, excludedSources);
-  const best =
-    unused.find((candidate) => !excludeSet.has(candidate.sourceKey)) ||
-    (options.allowUsedSources ? available.find((candidate) => !excludeSet.has(candidate.sourceKey)) : null);
+  const availableUnused = unused.filter((candidate) => !excludeSet.has(candidate.sourceKey));
+  const availableAll = available.filter((candidate) => !excludeSet.has(candidate.sourceKey));
+  const best = pickPreferredAlternative(
+    availableUnused.length > 0 ? availableUnused : (options.allowUsedSources ? availableAll : []),
+    options.currentChannel || '',
+  );
 
   if (!best) {
     return null;
