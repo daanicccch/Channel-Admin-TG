@@ -20,9 +20,8 @@ const BANNED_PHRASES = [
 const BANNED_STARTS = ['Друзья', 'Итак', 'Добрый день'];
 
 const POST_TYPE_LIMITS = {
-  digest: { min: 650, max: 950 },
-  analysis: { min: 1500, max: 3000 },
-  alert: { min: 250, max: 700 },
+  post: { max: 1100 },
+  alert: { max: 700 },
   weekly: { max: 1400 },
 };
 

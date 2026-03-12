@@ -116,7 +116,7 @@ async function main() {
   }
 
   await client.disconnect();
-  console.log('Готово! Можете запускать бота: node src/index.js --mode=manual --type=digest');
+  console.log('Готово! Можете запускать бота: node src/index.js --mode=manual --type=post');
   process.exit(0);
 }
 

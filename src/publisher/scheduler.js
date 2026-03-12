@@ -24,7 +24,7 @@ class Scheduler {
       async () => {
         logger.info('Запуск утреннего дайджеста');
         try {
-          await this.runPipeline('digest');
+          await this.runPipeline('post');
         } catch (err) {
           logger.error(`Ошибка утреннего дайджеста: ${err.message}`);
         }
@@ -40,7 +40,7 @@ class Scheduler {
       async () => {
         logger.info('Запуск дневной аналитики');
         try {
-          await this.runPipeline('analysis');
+          await this.runPipeline('post');
         } catch (err) {
           logger.error(`Ошибка дневной аналитики: ${err.message}`);
         }
@@ -56,7 +56,7 @@ class Scheduler {
       async () => {
         logger.info('Запуск вечернего обзора');
         try {
-          await this.runPipeline('digest');
+          await this.runPipeline('post');
         } catch (err) {
           logger.error(`Ошибка вечернего обзора: ${err.message}`);
         }

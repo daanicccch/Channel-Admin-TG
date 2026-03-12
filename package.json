@@ -5,7 +5,7 @@
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js --mode=auto",
-    "manual": "node src/index.js --mode=manual --type=digest",
+    "manual": "node src/index.js --mode=manual --type=post",
     "scrape": "node src/index.js --mode=scrape-only",
     "setup": "node src/setup.js"
   },

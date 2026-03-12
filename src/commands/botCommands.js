@@ -5,7 +5,7 @@ const mediaHandler = require('../generator/mediaHandler');
 const { getTelegramEntityLength } = require('../generator/formatBuilder');
 const { getChannelProfiles, getChannelProfile } = require('../channelProfiles');
 
-const VALID_TYPES = ['digest', 'analysis', 'alert', 'weekly'];
+const VALID_TYPES = ['post', 'alert', 'weekly'];
 const pendingPosts = new Map();
 let idCounter = 0;
 const DEFAULT_MEDIA_COUNT = Math.max(0, Math.min(parseInt(process.env.TG_MAX_MEDIA_PER_POST || '1', 10), 1));
@@ -46,7 +46,7 @@ function getDefaultProfile() {
   return getChannelProfiles()[0] || null;
 }
 
-function profileSelectionKeyboard(postType = 'digest', mediaCount = DEFAULT_MEDIA_COUNT) {
+function profileSelectionKeyboard(postType = 'post', mediaCount = DEFAULT_MEDIA_COUNT) {
   const profiles = getChannelProfiles();
   return {
     inline_keyboard: profiles.map((profile) => ([
@@ -201,12 +201,12 @@ function parsePostCommandArgs(parts) {
   const arg3 = parts[3];
 
   if (!arg1) {
-    return { profile: null, postType: 'digest', mediaCount: DEFAULT_MEDIA_COUNT };
+    return { profile: null, postType: 'post', mediaCount: DEFAULT_MEDIA_COUNT };
   }
 
   const profileFromArg1 = getChannelProfile(arg1);
   if (profileFromArg1) {
-    const postType = VALID_TYPES.includes(arg2) ? arg2 : 'digest';
+    const postType = VALID_TYPES.includes(arg2) ? arg2 : 'post';
     const mediaCount = Number.isFinite(Number(arg3)) ? Number(arg3) : DEFAULT_MEDIA_COUNT;
     return { profile: profileFromArg1, postType, mediaCount };
   }
@@ -217,6 +217,13 @@ function parsePostCommandArgs(parts) {
   }
 
   return { profile: undefined, postType: null, mediaCount: DEFAULT_MEDIA_COUNT };
+}
+
+function getTypeByCommand(commandName = '') {
+  const normalized = String(commandName || '').replace(/^\//, '').trim().toLowerCase();
+  if (normalized === 'post_alert') return 'alert';
+  if (normalized === 'post_weekly') return 'weekly';
+  return 'post';
 }
 
 async function startGeneration(bot, chatId, profile, postType, initialMediaCount, generateOnly) {
@@ -252,26 +259,30 @@ function setupCommands(bot, { generateOnly, generateFromAnalysis, publisher }) {
       ...profiles.map((profile) => `• <b>${profile.title}</b> — <code>${profile.id}</code> → <code>${profile.telegramChannelId || 'not set'}</code>`),
       '',
       'Usage:',
-      '<code>/post profile_id digest</code>',
-      '<code>/post profile_id analysis</code>',
+      '<code>/post profile_id</code>',
+      '<code>/post_alert profile_id</code>',
+      '<code>/post_weekly profile_id</code>',
     ];
     await ctx.reply(lines.join('\n'), { parse_mode: 'HTML' });
   });
 
-  bot.command('post', adminOnly, async (ctx) => {
+  async function handlePostCommand(ctx) {
     const parts = ctx.message.text.split(/\s+/).filter(Boolean);
     const profiles = getChannelProfiles();
+    const commandType = getTypeByCommand(parts[0]);
     const parsed = parsePostCommandArgs(parts);
 
+    parsed.postType = commandType;
+
     if (parsed.profile === undefined) {
-      return ctx.reply(`Unknown profile or type.\n\nUse /channels to list profiles.\nAvailable types: ${VALID_TYPES.join(', ')}`);
+      return ctx.reply('Unknown profile.\n\nUse /channels to list profiles.');
     }
 
     if (!parsed.profile) {
       if (profiles.length > 1) {
-        return ctx.reply('Choose a channel profile for generation. For non-digest types use <code>/post profile_id analysis</code>.', {
+        return ctx.reply('Choose a channel profile for generation. Available: <code>/post</code>, <code>/post_alert</code>, <code>/post_weekly</code>.', {
           parse_mode: 'HTML',
-          reply_markup: profileSelectionKeyboard(),
+          reply_markup: profileSelectionKeyboard(commandType),
         });
       }
 
@@ -290,7 +301,11 @@ function setupCommands(bot, { generateOnly, generateFromAnalysis, publisher }) {
 
     const initialMediaCount = Math.max(0, Math.min(Number(parsed.mediaCount) || DEFAULT_MEDIA_COUNT, 1));
     await startGeneration(bot, ctx.chat.id, parsed.profile, parsed.postType, initialMediaCount, generateOnly);
-  });
+  }
+
+  bot.command('post', adminOnly, handlePostCommand);
+  bot.command('post_alert', adminOnly, handlePostCommand);
+  bot.command('post_weekly', adminOnly, handlePostCommand);
 
   bot.command('status', adminOnly, async (ctx) => {
     try {

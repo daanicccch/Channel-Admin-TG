@@ -166,7 +166,7 @@ function summarizePost(row, profileId = 'default') {
   }
   return {
     id: row.id,
-    type: row.type || 'digest',
+    type: row.type || 'post',
     publishedAt: row.published_at || null,
     text: plainText,
     title: getTitle(row.text || ''),
@@ -192,7 +192,7 @@ function getRecentPosts(profileId = 'default', limit = 10) {
   return rows.map((row) => summarizePost(row, profileId));
 }
 
-function buildMemoryPrompt(profileId = 'default', postType = 'digest', anchorKeywords = []) {
+function buildMemoryPrompt(profileId = 'default', postType = 'post', anchorKeywords = []) {
   const anchors = [...new Set(
     (anchorKeywords || [])
       .map((item) => String(item || '').toLowerCase().trim())
@@ -221,7 +221,7 @@ function buildMemoryPrompt(profileId = 'default', postType = 'digest', anchorKey
   }).join('\n');
 }
 
-function findSimilarPost(text, profileId = 'default', currentPostType = 'digest', options = {}) {
+function findSimilarPost(text, profileId = 'default', currentPostType = 'post', options = {}) {
   const recentPosts = Array.isArray(options.recentPosts) && options.recentPosts.length > 0
     ? options.recentPosts
     : getRecentPosts(profileId, 12);
@@ -273,7 +273,7 @@ function insertGeneratedPost(post, options = {}) {
     `,
     [
       options.profileId || post._profileId || 'default',
-      post.postType || options.postType || 'digest',
+      post.postType || options.postType || 'post',
       post.text || '',
       post.media?.path || null,
       JSON.stringify(options.sources || []),

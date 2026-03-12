@@ -28,7 +28,7 @@ class QueueManager {
     const item = {
       id: this.idCounter,
       post,
-      type: post.postType || 'digest',
+      type: post.postType || 'post',
       status: 'pending',
       createdAt: new Date(),
       reviewRefs: [],

@@ -16,7 +16,7 @@ const { insertGeneratedPost } = require('./utils/postStore');
 const { getCheckedPostIds, getMaxCheckedPostId, markChannelPostChecked } = require('./utils/checkStore');
 
 function parseArgs() {
-  const args = { mode: 'manual', type: 'digest' };
+  const args = { mode: 'manual', type: 'post' };
   for (const arg of process.argv.slice(2)) {
     const match = arg.match(/^--(\w[\w-]*)=(.+)$/);
     if (match) {
@@ -40,7 +40,7 @@ function getCollectionOptions(postType) {
     };
   }
 
-  if (postType === 'analysis') {
+  if (postType === 'post') {
     return {
       lookbackHours: 48,
       limitOverride: 80,
@@ -145,7 +145,7 @@ function buildLeadMediaOverride(sourcePost) {
   };
 }
 
-async function generateFromAnalysis(postType = 'digest', analysisData = {}, options = {}) {
+async function generateFromAnalysis(postType = 'post', analysisData = {}, options = {}) {
   const profile = resolveProfile(options.profileId || analysisData.profileId);
 
   logger.info(`Stage: generation [${profile.id}]`);
@@ -187,7 +187,7 @@ async function generateFromAnalysis(postType = 'digest', analysisData = {}, opti
   return post;
 }
 
-async function generateOnly(postType = 'digest', options = {}) {
+async function generateOnly(postType = 'post', options = {}) {
   const profile = resolveProfile(options.profileId);
   const collectionOptions = getCollectionOptions(postType);
 
@@ -251,7 +251,7 @@ async function generateOnly(postType = 'digest', options = {}) {
   return generateFromAnalysis(postType, analysisData, { profileId: profile.id });
 }
 
-async function runPipeline(postType = 'digest', options = {}) {
+async function runPipeline(postType = 'post', options = {}) {
   const profile = resolveProfile(options.profileId);
 
   logger.info(`=== Pipeline start: ${postType} [${profile.id}] ===`);
@@ -382,7 +382,7 @@ async function runImmediateChecks(options = {}) {
 async function main() {
   const args = parseArgs();
   const mode = args.mode;
-  const postType = args.type || 'digest';
+  const postType = args.type || 'post';
   const profileId = args.profile;
 
   await initDb();

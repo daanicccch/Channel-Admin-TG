@@ -1,4 +1,3 @@
-Memecoin Humanizer Rules (Solana Edition)
 Goal: Make the post read like a high-signal alpha channel (e.g., haltmoves, dumbmoney), not like a generic AI summary.
 
 Keep
@@ -15,43 +14,43 @@ Shorter Blocks: Information should be fragmented and fast.
 
 Aggressive First Line: A strong "hook" that identifies the move immediately.
 
-Clean Punchline: A sharp final takeaway or observation.
+Zero-Fluff Punchline: A sharp final observation without concluding words.
 
 Vertical Metric Layout: When listing 2+ data points, use separate lines for scanability.
 
 One-Line Pairings: Combine related data into one line (e.g., MC: $1.2M (+45%) or Liq: 500 SOL (~$90k)).
 
-Short Setups: Use brief lead-ins before numbers (e.g., "Whale buy:", "Floor move:").
+Direct Causality: Instead of explanations, use dashes. (e.g., "Dev wallet active — possible marketing push").
 
-Remove
+Remove (Strict Ban)
 Format Labels: No Digest:, Update:, or Analysis:.
 
 Abstract Filler: No "The market is waiting," or "General sentiment is..."
 
-Editorial Transitions: No "Furthermore," "It is worth noting," or "In conclusion."
+Editorial Transitions: No "Notably," "Furthermore," "It is worth noting," or "In conclusion."
 
-Ad-Voice & Scamspeak: Strictly ban 100x gem, money printing machine, golden ticket, moonshot, don't miss out.
+Ad-Voice: Strictly ban 100x gem, golden ticket, moonshot, don't miss out.
 
-Forced Drama: No symbol of missed opportunities, legendary move, or total market wipeout for routine corrections.
+Emotional Weight: No legendary move, unbelievable pump, or tragic rug.
 
-Fake Urgency: No "Last chance to buy" or "It’s not too late" pitches.
+Fake Urgency: No "Last chance to buy" or "It’s not too late".
 
 Formatting Preferences
-CA Handling: Place Contract Addresses (CA) on a separate line in monospaced code for one-tap copying.
+CA Handling: Place Contract Addresses (CA) on a separate line in monospaced code for one-tap copying. (Mandatory if present in source).
 
 Isolation: If there is a massive liquidation, a dev rug, or a volume anomaly, isolate that block visually.
 
-Bold/Code: Use Bold for major price moves and Code for technical data.
+Bold/Code: Use Bold for major price moves/MC and Code for addresses and IDs.
 
-Emoji Rhythm: Maintain a minimalist rhythm (1-2 emojis), focusing on 🚨, 🔍, 📉, 📈.
+Emoji Rhythm: Strictly maximum 2 emojis per post. First in the hook, second at the end or near the CA. Focus on: 🚨, 🔍, 📉, 📈, 💊, 💎.
 
-Good Result Checklist
-Instant Hook: The main event is clear from the very first line.
+Good Result Checklist (The Human Test)
+Instant Hook: Does the first line contain the ticker and the action?
 
-Scanability: Numbers can be understood without reading the full sentences.
+Scanability: Can I understand the situation in 3 seconds without reading whole sentences?
 
-Authenticity: The post feels like a real-time message from a degen trader, not a summary bot.
+No Greeting: Did I delete "Hi", "Hello", or "Hey"?
 
-Neutral Tone: The text reports the "alpha" without acting as a sales representative for the token.
+No Advice: Is the tone neutral and reporting-only?
 
-Data Integrity: No invented theories or "insider" drama—only what the source provides.
+Clean Finish: Does the post end abruptly on a fact or a link, without a "wrap-up"?

@@ -19,7 +19,7 @@ const SOURCE_STOP_WORDS = new Set([
 class PostGenerator {
   async generatePost(type, analysisData, profile = null) {
     const { clusters = [], webData = {}, sentiment = {}, trends = [], leadMediaOverride = null } = analysisData || {};
-    const enforceCaptionForSourceMedia = ['digest', 'alert'].includes(type);
+    const enforceCaptionForSourceMedia = ['post', 'alert'].includes(type);
     const profileId = profile?.id || analysisData?.profileId || 'default';
     let leadMediaCandidate = leadMediaOverride || mediaHandler.selectLeadMediaPost(clusters, '', {
       profileId: profileId || null,
@@ -228,7 +228,11 @@ class PostGenerator {
       weekly: 'Недельный дайджест',
     };
 
-    const typeName = typeNames[type] || type;
+    const typeName = ({
+      post: 'Обычный пост',
+      alert: 'Алерт',
+      weekly: 'Недельный пост',
+    })[type] || typeNames[type] || type;
     const compactClusters = this._compactClusters(clusters);
     const compactWebData = this._compactValue(webData, 0, 10);
     const compactSentiment = this._compactValue(sentiment, 0, 8);
@@ -241,11 +245,15 @@ class PostGenerator {
       mediaCount: Array.isArray(leadMediaCandidate.paths) ? leadMediaCandidate.paths.length : 1,
       sourceText: this._truncateText(leadMediaCandidate.text, 700),
     } : null;
+    const sourceVisibleLength = formatBuilder.getTelegramVisibleText(leadMediaCandidate?.text || '').length;
     const sourceFocusInstruction = leadMediaCandidate
       ? `\nSOURCE-FIRST MODE:\nYou are rewriting exactly one source-post with image(s). Do not mix in another story from the cluster. Text and media must describe the same event.\nAnchor keywords: ${JSON.stringify(sourceContext?.anchorKeywords || [])}\n`
       : '\n';
     const captionConstraintInstruction = (leadMediaCandidate && enforceCaptionForSourceMedia)
       ? `\nCAPTION MODE:\nThis source-post will be published with media in a single Telegram caption. Keep the visible text within ${CAPTION_SAFE_TEXT_LIMIT} chars.\n`
+      : '\n';
+    const sourceLengthInstruction = leadMediaCandidate
+      ? `\nLENGTH CONTROL:\nThe source post is about ${sourceVisibleLength} visible chars long.\nTarget roughly the same length: stay close to the source, usually within minus 15% to plus 15%.\nDo not inflate a short source into a long article.\nIf the source is brief, keep the rewrite brief.\n`
       : '\n';
     const weeklyInstruction = type === 'weekly'
       ? `\nWEEKLY MODE:\nThis post must summarize the strongest events from the last 7 days, not expand one single case into an article.\nUse 2-4 distinct events if enough data exists.\nIf there is only one real event in the input, keep the post short and frame it as the main event of the week.\nKeep temporal sanity: if something appeared for a holiday and disappeared within 1-2 days, describe it plainly as a short-lived event.\nDo not turn a brief removal into tragedy, legend, or irreversible loss unless the source explicitly confirms permanence.\n`
@@ -268,7 +276,7 @@ ${humanizerRulesContent || 'Сделай текст живым, конкретн
 Напиши пост типа: ${typeName}
 Используй шаблон для этого типа поста из раздела "ШАБЛОНЫ ПОСТОВ" выше.
 Текст должен звучать как живой пост в Telegram, а не как пресс-релиз или нейтральная заметка.
-${typeBehaviorInstruction}${sourceFocusInstruction}${captionConstraintInstruction}${weeklyInstruction}
+${typeBehaviorInstruction}${sourceFocusInstruction}${captionConstraintInstruction}${sourceLengthInstruction}${weeklyInstruction}
 ДАННЫЕ ДЛЯ ПОСТА:
 
 Кластеры новостей:
@@ -302,12 +310,12 @@ ${memoryPrompt}
 - Пиши только на русском языке
 - Используй 1-2 эмодзи на весь пост
 - Если дан source-post с картинкой, перепиши именно его фактическое ядро в новом тоне, а не уходи в другую тему
-- Если дан source-post с картинкой для короткого формата digest/alert, текст должен помещаться в одну Telegram caption, цель: не более ${CAPTION_SAFE_TEXT_LIMIT} символов
+- Если дан source-post с картинкой для короткого формата post/alert, текст должен помещаться в одну Telegram caption, цель: не более ${CAPTION_SAFE_TEXT_LIMIT} символов
 - Не начинай пост с "Друзья", "Итак", "Добрый день"
 - Не используй фразы: "в данной статье", "следует отметить", "как мы все знаем", "безусловно", "резюмируя", "guaranteed", "to the moon"
 - Не выдумывай новые факты, ссылки, цифры и источники
 - Не повторяй недавний пост по заголовку, первой подводке, углу и ключевой мысли
-- Если тема пересекается с недавним постом, смени угол: alert = сигнал, digest = что уже понятно, analysis = механика и значение, weekly = место события в неделе
+- Если тема пересекается с недавним постом, смени угол: alert = сигнал, post = суть и контекст без воды, weekly = место события в неделе
 - Если свежие timestamped веб-данные конфликтуют со старыми постами, опирайся на более свежие данные
 - Не сравнивай старые и новые метрики без точной даты или явного таймфрейма из источника
 - Сохраняй фактуру входных данных и не уводи пост в сторону от главной темы входного набора
@@ -361,8 +369,7 @@ ${memoryPrompt}
   _getTypeBehaviorInstruction(type) {
     const instructions = {
       alert: `\nTYPE BEHAVIOR:\nalert = the fastest signal.\n- Lead with one fresh trigger or hint.\n- Keep it compact and punchy.\n- Do not state that implementation is finished unless the source confirms it.\n- Shape: signal -> why people noticed -> short watchline.\n`,
-      digest: `\nTYPE BEHAVIOR:\ndigest = a fuller update than alert.\n- Explain what happened, what is already known, and why it matters now.\n- A short list of gifts, effects, or details is welcome.\n- Do not reuse alert phrasing; expand the angle.\n`,
-      analysis: `\nTYPE BEHAVIOR:\nanalysis = explanation mode.\n- Focus on mechanics and interpretation.\n- Explain why the event matters for collectors using only given facts.\n- Avoid turning it into a padded digest.\n`,
+      post: `\nTYPE BEHAVIOR:\npost = the default rewritten post.\n- Explain what happened and what is already known now.\n- Keep the body tight and proportional to the source.\n- Add context only when it is directly supported by the input.\n- Never pad a short source just to make it feel bigger.\n`,
       weekly: `\nTYPE BEHAVIOR:\nweekly = selective recap.\n- Connect events into the picture of the week.\n- No alert-style framing.\n- Each block must justify why it made the week.\n`,
     };
 
