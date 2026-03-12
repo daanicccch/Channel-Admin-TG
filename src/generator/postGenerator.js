@@ -513,10 +513,7 @@ ${memoryPrompt}
       };
     }
 
-    const list = Array.isArray(clusters) ? clusters : [];
-    const sourceCluster = list.find((cluster) =>
-      Array.isArray(cluster.postIds) && cluster.postIds.includes(leadMediaCandidate.telegramPostId)
-    );
+    const sourceCluster = this._findSourceCluster(clusters, leadMediaCandidate);
 
     return {
       leadMediaCandidate,
@@ -549,6 +546,26 @@ ${memoryPrompt}
       .replace(/\s+/g, ' ')
       .trim()
       .toLowerCase();
+  }
+
+  _findSourceCluster(clusters, leadMediaCandidate) {
+    const list = Array.isArray(clusters) ? clusters : [];
+    const sourceKey = String(leadMediaCandidate?.sourceKey || '').trim().toLowerCase();
+    const telegramPostId = Number(leadMediaCandidate?.telegramPostId) || 0;
+
+    if (sourceKey) {
+      const exactCluster = list.find((cluster) =>
+        Array.isArray(cluster.sourceKeys) &&
+        cluster.sourceKeys.some((item) => String(item || '').trim().toLowerCase() === sourceKey)
+      );
+      if (exactCluster) {
+        return exactCluster;
+      }
+    }
+
+    return list.find((cluster) =>
+      Array.isArray(cluster.postIds) && cluster.postIds.includes(telegramPostId)
+    );
   }
 
   _enforceEmojiLimit(text, maxCount = 2) {

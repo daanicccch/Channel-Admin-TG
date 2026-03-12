@@ -106,6 +106,7 @@ function buildImmediateAnalysisData(profile, sourcePost, channelEntry = {}) {
         summary,
         keyFacts: keyFacts.length > 0 ? keyFacts : [`Пост из ${sourceTitle}`],
         sources: [sourceTitle],
+        sourceKeys: [`${String(sourcePost.channel || '').toLowerCase()}:${Number(sourcePost.id) || 0}`].filter(Boolean),
         engagementScore: Number(sourcePost.views) || 0,
         postIds: [sourcePost.id],
         postCount: 1,

@@ -96,6 +96,7 @@ class ContentAnalyzer {
   "keyFacts": ["факт 1", "факт 2"],
   "sources": ["название канала 1", "название канала 2"],
   "engagementScore": число,
+  "sourceKeys": ["channel_a:101", "channel_b:555"],
   "postIds": [id1, id2]
 }
 
@@ -149,6 +150,7 @@ ${webContext}
       summary: this._extractSummary(post.text),
       keyFacts: this._extractKeyFacts(post.text),
       sources: [post.channelTitle || post.channel || 'unknown'],
+      sourceKeys: [this._buildSourceKey(post.channel, post.id || post.telegram_post_id || 0)].filter(Boolean),
       engagementScore: post._score,
       postIds: [post.id || post.telegram_post_id || 0],
       fallback: true,
@@ -167,6 +169,7 @@ ${webContext}
         const existing = merged.get(key);
         existing.keyFacts = [...new Set([...(existing.keyFacts || []), ...(cluster.keyFacts || [])])];
         existing.sources = [...new Set([...(existing.sources || []), ...(cluster.sources || [])])];
+        existing.sourceKeys = [...new Set([...(existing.sourceKeys || []), ...(cluster.sourceKeys || [])])];
         existing.postIds = [...new Set([...(existing.postIds || []), ...(cluster.postIds || [])])];
         existing.engagementScore = (existing.engagementScore || 0) + (cluster.engagementScore || 0);
         if ((cluster.summary || '').length > (existing.summary || '').length) {
@@ -176,6 +179,7 @@ ${webContext}
         merged.set(key, {
           keyFacts: [],
           sources: [],
+          sourceKeys: [],
           postIds: [],
           ...cluster,
         });
@@ -194,10 +198,11 @@ ${webContext}
     const lines = posts.map((p, i) => {
       const id = p.id || p.telegram_post_id || i;
       const channel = p.channelTitle || p.channel || 'unknown';
+      const sourceKey = this._buildSourceKey(p.channel, id);
       const views = p.views || 0;
       const reactions = typeof p.reactions === 'string' ? p.reactions : JSON.stringify(p.reactions || '');
       const text = (p.text || '').substring(0, 1600);
-      return `[ID:${id}][${channel}][views:${views}][reactions:${reactions}]\n${text}`;
+      return `[ID:${id}][SOURCE:${sourceKey || 'unknown'}][${channel}][views:${views}][reactions:${reactions}]\n${text}`;
     });
 
     let result = lines.join('\n---\n');
@@ -263,6 +268,12 @@ ${webContext}
       .map(item => item.substring(0, 140));
 
     return sentences.length > 0 ? sentences : [normalized.substring(0, 140)];
+  }
+
+  _buildSourceKey(channel, postId) {
+    const normalizedChannel = String(channel || '').trim().toLowerCase();
+    const normalizedPostId = Number(postId) || 0;
+    return normalizedChannel && normalizedPostId ? `${normalizedChannel}:${normalizedPostId}` : '';
   }
 }
 

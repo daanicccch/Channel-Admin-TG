@@ -32,12 +32,16 @@ function writeUsedMediaSet(set) {
 
 function buildSelectionContext(clusters = [], postText = '') {
   const postIds = [];
+  const sourceKeys = [];
   const sourceNames = [];
   const clusterTextChunks = [String(postText || '')];
 
   for (const cluster of clusters || []) {
     if (Array.isArray(cluster.postIds)) {
       postIds.push(...cluster.postIds.filter(Boolean));
+    }
+    if (Array.isArray(cluster.sourceKeys)) {
+      sourceKeys.push(...cluster.sourceKeys.filter(Boolean));
     }
     if (Array.isArray(cluster.sources)) {
       sourceNames.push(...cluster.sources.filter(Boolean));
@@ -53,6 +57,7 @@ function buildSelectionContext(clusters = [], postText = '') {
   return {
     postText: String(postText || ''),
     postIds: [...new Set(postIds)],
+    sourceKeys: [...new Set(sourceKeys.map((item) => String(item || '').trim().toLowerCase()).filter(Boolean))],
     sources: normalizedSources,
     keywords,
   };
@@ -127,7 +132,9 @@ function scoreCandidate(candidate, context) {
     return normalizedText.includes(keyword) ? score + 1 : score;
   }, 0);
 
-  const isExactPost = context.postIds.includes(candidate.telegramPostId);
+  const hasExactSourceKeys = Array.isArray(context.sourceKeys) && context.sourceKeys.length > 0;
+  const isExactSource = hasExactSourceKeys && context.sourceKeys.includes(candidate.sourceKey);
+  const isExactPost = !hasExactSourceKeys && context.postIds.includes(candidate.telegramPostId);
   const channelMatch = context.sources.some(source => source && normalizedChannel.includes(source));
   const sizeScore = Math.min(Math.round((candidate.fileSize || 0) / 15000), 12);
   const viewsScore = Math.min(Math.round((candidate.views || 0) / 500), 20);
@@ -135,6 +142,7 @@ function scoreCandidate(candidate, context) {
   const originBoost = candidate.origin === 'cluster' ? 25 : (candidate.origin === 'text' ? 8 : 0);
 
   const totalScore =
+    (isExactSource ? 120 : 0) +
     (isExactPost ? 80 : 0) +
     (channelMatch ? 12 : 0) +
     (keywordHits * 14) +
@@ -215,17 +223,41 @@ function dedupeCandidates(candidates) {
   return Array.from(unique.values());
 }
 
-function getRowsForClusterPostIds(postIds, limitPerCluster = 40, profileId = null) {
-  const uniqueIds = [...new Set((postIds || []).filter(Boolean))];
-  if (uniqueIds.length === 0) return [];
+function parseSourceKey(sourceKey) {
+  const normalized = String(sourceKey || '').trim().toLowerCase();
+  if (!normalized.includes(':')) return null;
 
-  const placeholders = uniqueIds.map(() => '?').join(',');
+  const separatorIndex = normalized.lastIndexOf(':');
+  const channel = normalized.slice(0, separatorIndex).trim();
+  const telegramPostId = Number(normalized.slice(separatorIndex + 1)) || 0;
+
+  if (!channel || !telegramPostId) return null;
+  return { channel, telegramPostId };
+}
+
+function getRowsForClusterReferences(cluster = {}, limitPerCluster = 40, profileId = null) {
+  const sourceRefs = [...new Set((cluster.sourceKeys || []).filter(Boolean))]
+    .map(parseSourceKey)
+    .filter(Boolean);
+  const uniqueIds = [...new Set((cluster.postIds || []).filter(Boolean))];
+  if (sourceRefs.length === 0 && uniqueIds.length === 0) return [];
+
   const whereParts = [
-    `telegram_post_id IN (${placeholders})`,
     `media_paths IS NOT NULL`,
     `media_paths != ''`,
   ];
-  const params = [...uniqueIds];
+  const params = [];
+
+  if (sourceRefs.length > 0) {
+    whereParts.unshift(`(${sourceRefs.map(() => '(LOWER(channel) = ? AND telegram_post_id = ?)').join(' OR ')})`);
+    for (const ref of sourceRefs) {
+      params.push(ref.channel, ref.telegramPostId);
+    }
+  } else {
+    const placeholders = uniqueIds.map(() => '?').join(',');
+    whereParts.unshift(`telegram_post_id IN (${placeholders})`);
+    params.push(...uniqueIds);
+  }
 
   if (profileId) {
     whereParts.unshift('profile_id = ?');
@@ -237,7 +269,7 @@ function getRowsForClusterPostIds(postIds, limitPerCluster = 40, profileId = nul
      FROM source_posts
      WHERE ${whereParts.join('\n       AND ')}
      ORDER BY views DESC, scraped_at DESC
-     LIMIT ${Math.max(limitPerCluster, uniqueIds.length * 4)}`,
+     LIMIT ${Math.max(limitPerCluster, Math.max(sourceRefs.length, uniqueIds.length) * 4)}`,
     params,
   );
 }
@@ -272,7 +304,7 @@ function getRankedCandidates(clusters, postText = '', options = {}) {
 
   if (Array.isArray(clusters) && clusters.length > 0) {
     clusters.slice(0, 4).forEach((cluster, clusterIndex) => {
-      const rows = getRowsForClusterPostIds(cluster.postIds || [], 40, profileId);
+      const rows = getRowsForClusterReferences(cluster, 40, profileId);
       candidates.push(...rowsToCandidates(rows, 'cluster', clusterIndex));
     });
   }
@@ -418,7 +450,11 @@ function markSourcePostUsed(candidate, context = {}) {
 }
 
 function getMediaForPost(sourcePostIds, limit = 1, options = {}) {
-  const rows = getRowsForClusterPostIds(sourcePostIds, Math.max(limit * 4, 20), options.profileId || null);
+  const rows = getRowsForClusterReferences(
+    { postIds: sourcePostIds },
+    Math.max(limit * 4, 20),
+    options.profileId || null,
+  );
   return rowsToCandidates(rows, 'cluster')
     .sort((a, b) => (b.views - a.views) || (b.fileSize - a.fileSize))
     .slice(0, limit)
