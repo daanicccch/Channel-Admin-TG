@@ -6,7 +6,149 @@ const logger = require('./utils/logger');
 const PROFILES_ROOT = path.join(config.paths.root, 'profiles');
 const LEGACY_PROFILES_FILE = path.join(config.paths.data, 'channel_profiles.json');
 const DEFAULT_WEB_SOURCES = ['cryptopanic', 'coingecko', 'defillama', 'dexscreener', 'birdeye'];
+const DEFAULT_WEEKLY_INTERVAL = { start: '12:00', end: '12:15' };
 let startupProfilesLogged = false;
+
+function formatHourMinute(hour, minute = 0) {
+  return `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+}
+
+function createLegacyScheduleFallback() {
+  return {
+    timezone: config.schedule.timezone,
+    postIntervals: [
+      {
+        start: formatHourMinute(config.schedule.morningHour),
+        end: formatHourMinute(config.schedule.morningHour, 15),
+        label: 'morning',
+      },
+      {
+        start: formatHourMinute(config.schedule.dayHour),
+        end: formatHourMinute(config.schedule.dayHour, 15),
+        label: 'day',
+      },
+      {
+        start: formatHourMinute(config.schedule.eveningHour),
+        end: formatHourMinute(config.schedule.eveningHour, 15),
+        label: 'evening',
+      },
+    ],
+    weeklyDigest: {
+      enabled: true,
+      dayOfWeek: 0,
+      interval: { ...DEFAULT_WEEKLY_INTERVAL },
+    },
+    channelChecksIntervalMinutes: config.schedule.checkIntervalMinutes,
+  };
+}
+
+function parseTimeToMinutes(value) {
+  const match = String(value || '').trim().match(/^(\d{1,2}):(\d{2})$/);
+  if (!match) return null;
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+  if (!Number.isInteger(hour) || !Number.isInteger(minute) || hour < 0 || hour > 23 || minute < 0 || minute > 59) {
+    return null;
+  }
+  return hour * 60 + minute;
+}
+
+function normalizeTimeValue(value, fallback) {
+  const minutes = parseTimeToMinutes(value);
+  if (minutes === null) return fallback;
+  const hour = Math.floor(minutes / 60);
+  const minute = minutes % 60;
+  return formatHourMinute(hour, minute);
+}
+
+function normalizeSchedule(rawSchedule = {}, fallbackSchedule = createLegacyScheduleFallback()) {
+  const schedule = rawSchedule && typeof rawSchedule === 'object' ? rawSchedule : {};
+  const fallbackIntervals = Array.isArray(fallbackSchedule.postIntervals) ? fallbackSchedule.postIntervals : [];
+  const rawIntervals = Array.isArray(schedule.postIntervals) ? schedule.postIntervals : fallbackIntervals;
+
+  const postIntervals = rawIntervals
+    .map((interval, index) => {
+      if (!interval || typeof interval !== 'object') {
+        return null;
+      }
+
+      const start = normalizeTimeValue(interval.start, null);
+      const end = normalizeTimeValue(interval.end, null);
+      if (!start || !end) {
+        return null;
+      }
+
+      const startMinutes = parseTimeToMinutes(start);
+      const endMinutes = parseTimeToMinutes(end);
+      if (startMinutes === null || endMinutes === null || endMinutes <= startMinutes) {
+        return null;
+      }
+
+      return {
+        start,
+        end,
+        startMinutes,
+        endMinutes,
+        label: String(interval.label || `slot_${index + 1}`).trim(),
+      };
+    })
+    .filter(Boolean);
+
+  const rawWeeklyDigest = schedule.weeklyDigest;
+  const fallbackWeeklyDigest = fallbackSchedule.weeklyDigest || {};
+  const weeklyIntervalRaw = rawWeeklyDigest?.interval || fallbackWeeklyDigest.interval || DEFAULT_WEEKLY_INTERVAL;
+  const weeklyIntervalStart = normalizeTimeValue(weeklyIntervalRaw.start, DEFAULT_WEEKLY_INTERVAL.start);
+  const weeklyIntervalEnd = normalizeTimeValue(weeklyIntervalRaw.end, DEFAULT_WEEKLY_INTERVAL.end);
+  const weeklyIntervalStartMinutes = parseTimeToMinutes(weeklyIntervalStart);
+  const weeklyIntervalEndMinutes = parseTimeToMinutes(weeklyIntervalEnd);
+  const weeklyInterval = weeklyIntervalStartMinutes !== null &&
+    weeklyIntervalEndMinutes !== null &&
+    weeklyIntervalEndMinutes > weeklyIntervalStartMinutes
+    ? {
+        start: weeklyIntervalStart,
+        end: weeklyIntervalEnd,
+        startMinutes: weeklyIntervalStartMinutes,
+        endMinutes: weeklyIntervalEndMinutes,
+      }
+    : {
+        start: DEFAULT_WEEKLY_INTERVAL.start,
+        end: DEFAULT_WEEKLY_INTERVAL.end,
+        startMinutes: parseTimeToMinutes(DEFAULT_WEEKLY_INTERVAL.start),
+        endMinutes: parseTimeToMinutes(DEFAULT_WEEKLY_INTERVAL.end),
+      };
+
+  const weeklyDigest = {
+    enabled: rawWeeklyDigest?.enabled === undefined
+      ? Boolean(fallbackWeeklyDigest.enabled)
+      : rawWeeklyDigest.enabled !== false,
+    dayOfWeek: Number.isInteger(rawWeeklyDigest?.dayOfWeek)
+      ? rawWeeklyDigest.dayOfWeek
+      : (Number.isInteger(fallbackWeeklyDigest.dayOfWeek) ? fallbackWeeklyDigest.dayOfWeek : 0),
+    interval: weeklyInterval,
+  };
+
+  const rawCheckInterval = Number(schedule.channelChecksIntervalMinutes);
+  const fallbackCheckInterval = Number(fallbackSchedule.channelChecksIntervalMinutes) || config.schedule.checkIntervalMinutes;
+
+  return {
+    timezone: String(schedule.timezone || fallbackSchedule.timezone || config.schedule.timezone || 'Europe/Moscow').trim(),
+    postIntervals: postIntervals.length > 0 ? postIntervals : fallbackIntervals.map((interval, index) => ({
+      start: normalizeTimeValue(interval.start, '09:00'),
+      end: normalizeTimeValue(interval.end, '09:15'),
+      startMinutes: parseTimeToMinutes(normalizeTimeValue(interval.start, '09:00')),
+      endMinutes: parseTimeToMinutes(normalizeTimeValue(interval.end, '09:15')),
+      label: String(interval.label || `slot_${index + 1}`).trim(),
+    })),
+    weeklyDigest: {
+      ...weeklyDigest,
+      dayOfWeek: Math.min(6, Math.max(0, Number(weeklyDigest.dayOfWeek) || 0)),
+    },
+    channelChecksIntervalMinutes: Math.max(
+      1,
+      Number.isFinite(rawCheckInterval) && rawCheckInterval > 0 ? rawCheckInterval : fallbackCheckInterval,
+    ),
+  };
+}
 
 function resolvePathMaybe(filePath, baseDir = config.paths.root) {
   if (!filePath) return '';
@@ -145,6 +287,7 @@ function createDefaultProfile() {
     webSourcesPath: defaultWebConfig.path,
     webSources: defaultWebConfig.names.length > 0 ? defaultWebConfig.names : [...DEFAULT_WEB_SOURCES],
     baseDir: hasDefaultDir ? defaultDir : config.paths.root,
+    schedule: createLegacyScheduleFallback(),
   };
 }
 
@@ -199,6 +342,7 @@ function normalizeProfile(rawProfile, baseDir = config.paths.root) {
     webSourcesPath: webConfig.path,
     webSources: webConfig.names.length > 0 ? webConfig.names : [...DEFAULT_WEB_SOURCES],
     baseDir: profileDir,
+    schedule: normalizeSchedule(rawProfile.schedule, createLegacyScheduleFallback()),
   };
 
   if (!profile.telegramChannelId && profile.id === 'default') {
@@ -315,8 +459,8 @@ function logChannelProfilesStartup(force = false) {
 
   logger.info(`channelProfiles: active profiles (${profiles.length})`);
   for (const profile of profiles) {
-    logger.info(
-      `channelProfiles: ${profile.id} title="${profile.title}" target=${profile.telegramChannelId || 'not set'} source=${profile.baseDir || 'unknown'}`
+      logger.info(
+      `channelProfiles: ${profile.id} title="${profile.title}" target=${profile.telegramChannelId || 'not set'} source=${profile.baseDir || 'unknown'} intervals=${profile.schedule?.postIntervals?.length || 0} tz=${profile.schedule?.timezone || 'n/a'}`
     );
   }
 
@@ -335,4 +479,5 @@ module.exports = {
   getChannelProfiles,
   getChannelProfile,
   logChannelProfilesStartup,
+  createLegacyScheduleFallback,
 };

@@ -6,5 +6,29 @@
   "templates_path": "TEMPLATES.md",
   "humanizer_path": "HUMANIZER_RULES.md",
   "source_channels_path": "channels.json",
-  "web_sources_path": "web_sources.json"
+  "web_sources_path": "web_sources.json",
+  "schedule": {
+    "timezone": "Europe/Moscow",
+    "postIntervals": [
+      {
+        "label": "morning",
+        "start": "09:00",
+        "end": "12:00"
+      },
+      {
+        "label": "evening",
+        "start": "18:00",
+        "end": "21:00"
+      }
+    ],
+    "channelChecksIntervalMinutes": 10,
+    "weeklyDigest": {
+      "enabled": true,
+      "dayOfWeek": 0,
+      "interval": {
+        "start": "12:00",
+        "end": "13:00"
+      }
+    }
+  }
 }

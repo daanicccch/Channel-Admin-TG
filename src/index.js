@@ -398,8 +398,8 @@ async function main() {
 
     case 'auto': {
       scheduler = new Scheduler(
-        (type) => runPipeline(type, { profileId }),
-        () => runImmediateChecks({ profileId }),
+        (type, options = {}) => runPipeline(type, { profileId: options.profileId || profileId }),
+        (options = {}) => runImmediateChecks({ profileId: options.profileId || profileId }),
       );
       scheduler.start();
 

@@ -6,5 +6,94 @@
   "templates_path": "TEMPLATES.md",
   "humanizer_path": "HUMANIZER_RULES.md",
   "source_channels_path": "channels.json",
-  "web_sources_path": "web_sources.json"
+  "web_sources_path": "web_sources.json",
+  "schedule": {
+    "timezone": "Europe/Moscow",
+    "postIntervals": [
+      {
+        "label": "09",
+        "start": "09:00",
+        "end": "10:00"
+      },
+      {
+        "label": "10",
+        "start": "10:00",
+        "end": "11:00"
+      },
+      {
+        "label": "11",
+        "start": "11:00",
+        "end": "12:00"
+      },
+      {
+        "label": "12",
+        "start": "12:00",
+        "end": "13:00"
+      },
+      {
+        "label": "13",
+        "start": "13:00",
+        "end": "14:00"
+      },
+      {
+        "label": "14",
+        "start": "14:00",
+        "end": "15:00"
+      },
+      {
+        "label": "15",
+        "start": "15:00",
+        "end": "16:00"
+      },
+      {
+        "label": "16",
+        "start": "16:00",
+        "end": "17:00"
+      },
+      {
+        "label": "17",
+        "start": "17:00",
+        "end": "18:00"
+      },
+      {
+        "label": "18",
+        "start": "18:00",
+        "end": "19:00"
+      },
+      {
+        "label": "19",
+        "start": "19:00",
+        "end": "20:00"
+      },
+      {
+        "label": "20",
+        "start": "20:00",
+        "end": "21:00"
+      },
+      {
+        "label": "21",
+        "start": "21:00",
+        "end": "22:00"
+      },
+      {
+        "label": "22",
+        "start": "22:00",
+        "end": "23:00"
+      },
+      {
+        "label": "23",
+        "start": "23:00",
+        "end": "23:59"
+      }
+    ],
+    "channelChecksIntervalMinutes": 10,
+    "weeklyDigest": {
+      "enabled": true,
+      "dayOfWeek": 0,
+      "interval": {
+        "start": "12:00",
+        "end": "13:00"
+      }
+    }
+  }
 }

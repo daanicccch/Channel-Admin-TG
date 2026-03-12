@@ -56,7 +56,8 @@ class QueueManager {
           const minIntervalMs = config.limits.minPostInterval * 60 * 1000;
           try {
             const lastPost = queryOne(
-              'SELECT published_at FROM posts WHERE published_at IS NOT NULL ORDER BY published_at DESC LIMIT 1'
+              'SELECT published_at FROM posts WHERE profile_id = ? AND published_at IS NOT NULL ORDER BY published_at DESC LIMIT 1',
+              [item.profileId]
             );
 
             if (lastPost && lastPost.published_at) {

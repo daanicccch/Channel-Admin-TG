@@ -1,6 +1,28 @@
 const cron = require('node-cron');
-const { config } = require('../config');
 const logger = require('../utils/logger');
+const { getChannelProfiles } = require('../channelProfiles');
+
+function getRandomMinuteInRange(startMinutes, endMinutes) {
+  const safeStart = Number(startMinutes);
+  const safeEnd = Number(endMinutes);
+
+  if (!Number.isFinite(safeStart) || !Number.isFinite(safeEnd) || safeEnd <= safeStart) {
+    return 9 * 60;
+  }
+
+  const offset = Math.floor(Math.random() * (safeEnd - safeStart));
+  return safeStart + offset;
+}
+
+function buildCronFromMinuteOfDay(totalMinutes) {
+  const minute = totalMinutes % 60;
+  const hour = Math.floor(totalMinutes / 60) % 24;
+  return `${minute} ${hour} * * *`;
+}
+
+function buildIntervalLabel(interval, index) {
+  return interval.label || `slot_${index + 1}`;
+}
 
 class Scheduler {
   constructor(runPipeline, runChannelChecks = null) {
@@ -9,99 +31,78 @@ class Scheduler {
     this.tasks = [];
   }
 
+  scheduleTask(cronExpr, timezone, taskTitle, callback) {
+    const task = cron.schedule(
+      cronExpr,
+      async () => {
+        logger.info(`${taskTitle}: started`);
+        try {
+          await callback();
+        } catch (err) {
+          logger.error(`${taskTitle}: ${err.message}`);
+        }
+      },
+      { timezone },
+    );
+
+    this.tasks.push(task);
+    logger.info(`${taskTitle}: ${cronExpr} (${timezone})`);
+  }
+
   start() {
-    const tz = config.schedule.timezone;
-    const { morningHour, dayHour, eveningHour, checkIntervalMinutes } = config.schedule;
+    const profiles = getChannelProfiles();
 
-    const morningMin = Math.floor(Math.random() * 16);
-    const dayMin = Math.floor(Math.random() * 16);
-    const eveningMin = Math.floor(Math.random() * 16);
-    const weeklyMin = Math.floor(Math.random() * 16);
+    for (const profile of profiles) {
+      const schedule = profile.schedule || {};
+      const timezone = schedule.timezone || 'Europe/Moscow';
+      const postIntervals = Array.isArray(schedule.postIntervals) ? schedule.postIntervals : [];
 
-    const morningCron = `${morningMin} ${morningHour} * * *`;
-    const morningTask = cron.schedule(
-      morningCron,
-      async () => {
-        logger.info('Запуск утреннего дайджеста');
-        try {
-          await this.runPipeline('post');
-        } catch (err) {
-          logger.error(`Ошибка утреннего дайджеста: ${err.message}`);
-        }
-      },
-      { timezone: tz },
-    );
-    this.tasks.push(morningTask);
-    logger.info(`Утренний дайджест: ${morningCron} (${tz})`);
+      postIntervals.forEach((interval, index) => {
+        const randomMinuteOfDay = getRandomMinuteInRange(interval.startMinutes, interval.endMinutes);
+        const cronExpr = buildCronFromMinuteOfDay(randomMinuteOfDay);
+        const slotLabel = buildIntervalLabel(interval, index);
 
-    const dayCron = `${dayMin} ${dayHour} * * *`;
-    const dayTask = cron.schedule(
-      dayCron,
-      async () => {
-        logger.info('Запуск дневной аналитики');
-        try {
-          await this.runPipeline('post');
-        } catch (err) {
-          logger.error(`Ошибка дневной аналитики: ${err.message}`);
-        }
-      },
-      { timezone: tz },
-    );
-    this.tasks.push(dayTask);
-    logger.info(`Дневная аналитика: ${dayCron} (${tz})`);
+        this.scheduleTask(
+          cronExpr,
+          timezone,
+          `Autopost [${profile.id}] ${slotLabel} ${interval.start}-${interval.end}`,
+          () => this.runPipeline('post', { profileId: profile.id, scheduleSlot: slotLabel }),
+        );
+      });
 
-    const eveningCron = `${eveningMin} ${eveningHour} * * *`;
-    const eveningTask = cron.schedule(
-      eveningCron,
-      async () => {
-        logger.info('Запуск вечернего обзора');
-        try {
-          await this.runPipeline('post');
-        } catch (err) {
-          logger.error(`Ошибка вечернего обзора: ${err.message}`);
-        }
-      },
-      { timezone: tz },
-    );
-    this.tasks.push(eveningTask);
-    logger.info(`Вечерний обзор: ${eveningCron} (${tz})`);
+      if (schedule.weeklyDigest?.enabled !== false && schedule.weeklyDigest?.interval) {
+        const weeklyInterval = schedule.weeklyDigest.interval;
+        const randomMinuteOfDay = getRandomMinuteInRange(
+          weeklyInterval.startMinutes,
+          weeklyInterval.endMinutes,
+        );
+        const minute = randomMinuteOfDay % 60;
+        const hour = Math.floor(randomMinuteOfDay / 60) % 24;
+        const dayOfWeek = Math.min(6, Math.max(0, Number(schedule.weeklyDigest.dayOfWeek) || 0));
+        const weeklyCron = `${minute} ${hour} * * ${dayOfWeek}`;
 
-    const weeklyCron = `${weeklyMin} 12 * * 0`;
-    const weeklyTask = cron.schedule(
-      weeklyCron,
-      async () => {
-        logger.info('Запуск еженедельного дайджеста');
-        try {
-          await this.runPipeline('weekly');
-        } catch (err) {
-          logger.error(`Ошибка еженедельного дайджеста: ${err.message}`);
-        }
-      },
-      { timezone: tz },
-    );
-    this.tasks.push(weeklyTask);
-    logger.info(`Еженедельный дайджест: ${weeklyCron} (${tz})`);
+        this.scheduleTask(
+          weeklyCron,
+          timezone,
+          `Weekly digest [${profile.id}] ${weeklyInterval.start}-${weeklyInterval.end}`,
+          () => this.runPipeline('weekly', { profileId: profile.id, scheduleSlot: 'weekly' }),
+        );
+      }
 
-    if (typeof this.runChannelChecks === 'function') {
-      const safeInterval = Math.max(1, Number(checkIntervalMinutes) || 10);
-      const checksCron = `*/${safeInterval} * * * *`;
-      const checksTask = cron.schedule(
-        checksCron,
-        async () => {
-          logger.info('Запуск быстрой проверки is_check-каналов');
-          try {
-            await this.runChannelChecks();
-          } catch (err) {
-            logger.error(`Ошибка быстрой проверки каналов: ${err.message}`);
-          }
-        },
-        { timezone: tz },
-      );
-      this.tasks.push(checksTask);
-      logger.info(`Быстрая проверка is_check-каналов: ${checksCron} (${tz})`);
+      if (typeof this.runChannelChecks === 'function') {
+        const checkIntervalMinutes = Math.max(1, Number(schedule.channelChecksIntervalMinutes) || 10);
+        const checksCron = `*/${checkIntervalMinutes} * * * *`;
+
+        this.scheduleTask(
+          checksCron,
+          timezone,
+          `Channel checks [${profile.id}]`,
+          () => this.runChannelChecks({ profileId: profile.id }),
+        );
+      }
     }
 
-    logger.info(`Планировщик запущен: ${this.tasks.length} задач`);
+    logger.info(`Scheduler started: ${this.tasks.length} task(s) across ${profiles.length} profile(s)`);
   }
 
   stop() {
@@ -109,7 +110,7 @@ class Scheduler {
       task.stop();
     }
     this.tasks = [];
-    logger.info('Планировщик остановлен');
+    logger.info('Scheduler stopped');
   }
 }
 
