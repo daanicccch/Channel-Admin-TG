@@ -131,6 +131,12 @@ function makePendingEntry(post, type, mediaCount = DEFAULT_MEDIA_COUNT, sourceHi
   };
 }
 
+function rememberPreviewSource(entry) {
+  mediaHandler.rememberShownSource(entry?.post?._leadMediaCandidate, {
+    profileId: entry?.profileId,
+  });
+}
+
 function formatSourceLine(post) {
   const candidate = post?._leadMediaCandidate || null;
   if (!candidate) {
@@ -258,6 +264,7 @@ async function startGeneration(bot, chatId, profile, postType, initialMediaCount
       const entry = makePendingEntry(post, postType, initialMediaCount);
       applyMediaCount(entry, initialMediaCount);
       pendingPosts.set(id, entry);
+      rememberPreviewSource(entry);
 
       await sendPreviewToAdmins(bot, entry, id);
       logger.info(`Command /post ${postType}: preview sent for profile=${profile.id}, id=${id}`);
@@ -410,6 +417,7 @@ function setupCommands(bot, { generateOnly, generateFromAnalysis, publisher }) {
         const nextEntry = makePendingEntry(newPost, postType, entry.mediaCount ?? DEFAULT_MEDIA_COUNT);
         applyMediaCount(nextEntry, nextEntry.mediaCount);
         pendingPosts.set(id, nextEntry);
+        rememberPreviewSource(nextEntry);
         await sendPreviewToAdmins(bot, nextEntry, id, '<b>Preview (regenerated)</b>');
         logger.info(`Post ${id} regenerated (${postType}) for profile=${entry.profileId}`);
       } catch (err) {
@@ -468,6 +476,7 @@ function setupCommands(bot, { generateOnly, generateFromAnalysis, publisher }) {
         );
         applyMediaCount(nextEntry, nextEntry.mediaCount);
         pendingPosts.set(id, nextEntry);
+        rememberPreviewSource(nextEntry);
         await sendPreviewToAdmins(bot, nextEntry, id, '<b>Preview (updated source)</b>');
         logger.info(`Post ${id}: source replaced with ${sourceOverride.channel}/${sourceOverride.telegramPostId}`);
       } catch (err) {
@@ -494,6 +503,7 @@ function setupCommands(bot, { generateOnly, generateFromAnalysis, publisher }) {
     applyMediaCount(entry, count);
     await ctx.answerCbQuery(`Images: ${entry.mediaCount}`);
     await clearPreviewKeyboards(bot, entry.previewRefs);
+    rememberPreviewSource(entry);
     await sendPreviewToAdmins(bot, entry, id, '<b>Preview (updated)</b>');
   });
 

@@ -9,6 +9,7 @@ const MAX_MEDIA_PER_POST = parseInt(process.env.TG_MAX_MEDIA_PER_POST || '1', 10
 const FALLBACK_MEDIA_LOOKBACK_HOURS = parseInt(process.env.TG_FALLBACK_MEDIA_LOOKBACK_HOURS || '24', 10);
 const USED_MEDIA_FILE = path.join(config.paths.data, 'used_media.json');
 const REJECTED_SOURCE_FILE = path.join(config.paths.data, 'rejected_sources.json');
+const CHANNEL_ROTATION_FILE = path.join(config.paths.data, 'channel_rotation.json');
 const MIN_MEDIA_FILE_SIZE_BYTES = parseInt(process.env.TG_MIN_MEDIA_FILE_SIZE_BYTES || '20000', 10);
 const MAX_RECENT_MEDIA_SCAN = parseInt(process.env.TG_MAX_RECENT_MEDIA_SCAN || '700', 10);
 const RECENT_PUBLISHED_MEDIA_LIMIT = parseInt(process.env.TG_RECENT_PUBLISHED_MEDIA_LIMIT || '300', 10);
@@ -63,6 +64,33 @@ function getRejectedSourceMemory(profileId = 'default') {
     mediaPaths: new Set(Array.isArray(entry.mediaPaths) ? entry.mediaPaths.filter(Boolean) : []),
     mediaHashes: new Set(Array.isArray(entry.mediaHashes) ? entry.mediaHashes.filter(Boolean) : []),
   };
+}
+
+function readChannelRotationRegistry() {
+  try {
+    if (!fs.existsSync(CHANNEL_ROTATION_FILE)) return {};
+    const raw = fs.readFileSync(CHANNEL_ROTATION_FILE, 'utf8');
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch (err) {
+    logger.warn(`mediaHandler: failed to read channel rotation file - ${err.message}`);
+    return {};
+  }
+}
+
+function writeChannelRotationRegistry(registry) {
+  try {
+    fs.writeFileSync(CHANNEL_ROTATION_FILE, JSON.stringify(registry, null, 2));
+  } catch (err) {
+    logger.warn(`mediaHandler: failed to write channel rotation file - ${err.message}`);
+  }
+}
+
+function getRecentShownChannels(profileId = 'default') {
+  const registry = readChannelRotationRegistry();
+  const profileKey = String(profileId || 'default');
+  const entry = registry[profileKey];
+  return Array.isArray(entry) ? entry.map((item) => String(item || '').trim().toLowerCase()).filter(Boolean) : [];
 }
 
 function buildSelectionContext(clusters = [], postText = '') {
@@ -264,6 +292,19 @@ function rememberRejectedSource(candidate, context = {}) {
   return true;
 }
 
+function rememberShownSource(candidate, context = {}) {
+  const channel = String(candidate?.channel || '').trim().toLowerCase();
+  if (!channel) return false;
+
+  const registry = readChannelRotationRegistry();
+  const profileKey = String(context.profileId || 'default');
+  const history = Array.isArray(registry[profileKey]) ? registry[profileKey] : [];
+  const nextHistory = [channel, ...history.filter((item) => String(item || '').trim().toLowerCase() !== channel)].slice(0, 24);
+  registry[profileKey] = nextHistory;
+  writeChannelRotationRegistry(registry);
+  return true;
+}
+
 function scoreCandidate(candidate, context) {
   const normalizedText = normalizeText(candidate.text);
   const normalizedChannel = normalizeText(candidate.channel);
@@ -280,9 +321,12 @@ function scoreCandidate(candidate, context) {
   const isExactPost = !hasExactSourceKeys && context.postIds.includes(candidate.telegramPostId);
   const channelMatch = context.sources.some(source => source && normalizedChannel.includes(source));
   const sizeScore = Math.min(Math.round((candidate.fileSize || 0) / 15000), 12);
-  const viewsScore = Math.min(Math.round((candidate.views || 0) / 500), 20);
-  const clusterBoost = candidate.clusterIndex >= 0 ? Math.max(0, 18 - (candidate.clusterIndex * 6)) : 0;
-  const originBoost = candidate.origin === 'cluster' ? 25 : (candidate.origin === 'text' ? 8 : 0);
+  const viewsScore = Math.min(Math.round((candidate.views || 0) / 1500), 6);
+  const clusterBoost = candidate.clusterIndex >= 0 ? Math.max(0, 10 - (candidate.clusterIndex * 4)) : 0;
+  const originBoost = candidate.origin === 'cluster' ? 12 : (candidate.origin === 'text' ? 4 : 0);
+  const channelRotationPenalty = candidate.channelRecencyIndex >= 0
+    ? Math.min(18, candidate.channelRecencyIndex * 4)
+    : 0;
   const freshnessScore =
     ageHours <= 3 ? 48 :
     ageHours <= 6 ? 40 :
@@ -293,15 +337,16 @@ function scoreCandidate(candidate, context) {
     ageHours <= 120 ? 3 : 0;
 
   const totalScore =
-    (isExactSource ? 120 : 0) +
-    (isExactPost ? 80 : 0) +
-    (channelMatch ? 12 : 0) +
-    (keywordHits * 14) +
+    (isExactSource ? 45 : 0) +
+    (isExactPost ? 28 : 0) +
+    (channelMatch ? 8 : 0) +
+    (keywordHits * 8) +
     clusterBoost +
     originBoost +
     freshnessScore +
     sizeScore +
-    viewsScore;
+    viewsScore -
+    channelRotationPenalty;
 
   return {
     ...candidate,
@@ -438,6 +483,18 @@ function filterRejectedCandidates(candidates = [], profileId = null) {
   );
 }
 
+function applyChannelRotation(candidates = [], profileId = null) {
+  const recentChannels = getRecentShownChannels(profileId || 'default');
+  const recentIndex = new Map(recentChannels.map((channel, index) => [channel, index]));
+
+  return candidates.map((candidate) => ({
+    ...candidate,
+    channelRecencyIndex: recentIndex.has(String(candidate.channel || '').trim().toLowerCase())
+      ? recentIndex.get(String(candidate.channel || '').trim().toLowerCase())
+      : -1,
+  }));
+}
+
 function parseSourceKey(sourceKey) {
   const normalized = String(sourceKey || '').trim().toLowerCase();
   if (!normalized.includes(':')) return null;
@@ -529,9 +586,11 @@ function getRankedCandidates(clusters, postText = '', options = {}) {
   const recentRows = getRecentMediaRows(FALLBACK_MEDIA_LOOKBACK_HOURS, MAX_RECENT_MEDIA_SCAN, profileId);
   candidates.push(...rowsToCandidates(recentRows, 'text'));
 
-  const ranked = dedupeCandidates(candidates.map(candidate => scoreCandidate(candidate, context)))
+  const rotated = applyChannelRotation(candidates, profileId);
+  const ranked = dedupeCandidates(rotated.map(candidate => scoreCandidate(candidate, context)))
     .sort((a, b) =>
       (b.totalScore - a.totalScore) ||
+      (a.channelRecencyIndex - b.channelRecencyIndex) ||
       (b.activityAtMs - a.activityAtMs) ||
       (b.views - a.views) ||
       (b.fileSize - a.fileSize)
@@ -786,6 +845,7 @@ module.exports = {
   selectLeadMediaPost,
   selectAlternativeLeadMediaPost,
   rememberRejectedSource,
+  rememberShownSource,
   markSourcePostUsed,
   getMediaForPost,
   getRecentMedia,
