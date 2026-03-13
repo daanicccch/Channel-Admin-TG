@@ -61,6 +61,7 @@ function getRejectedSourceMemory(profileId = 'default') {
   const entry = registry[profileKey] || {};
   return {
     sourceKeys: new Set(Array.isArray(entry.sourceKeys) ? entry.sourceKeys.filter(Boolean) : []),
+    sourcePosts: new Set(Array.isArray(entry.sourcePosts) ? entry.sourcePosts.filter(Boolean) : []),
     mediaPaths: new Set(Array.isArray(entry.mediaPaths) ? entry.mediaPaths.filter(Boolean) : []),
     mediaHashes: new Set(Array.isArray(entry.mediaHashes) ? entry.mediaHashes.filter(Boolean) : []),
   };
@@ -177,6 +178,12 @@ function buildSourceKey(channel, telegramPostId) {
   return normalizedChannel && normalizedPostId ? `${normalizedChannel}:${normalizedPostId}` : '';
 }
 
+function buildSourcePostLabel(channel, telegramPostId) {
+  const normalizedChannel = String(channel || '').trim();
+  const normalizedPostId = Number(telegramPostId) || 0;
+  return normalizedChannel && normalizedPostId ? `${normalizedChannel}/${normalizedPostId}` : '';
+}
+
 function parseUsedInPosts(value) {
   if (!value) return [];
   try {
@@ -264,16 +271,21 @@ function rememberRejectedSource(candidate, context = {}) {
 
   const profileKey = String(context.profileId || 'default');
   const registry = readRejectedSourceRegistry();
-  const entry = registry[profileKey] && typeof registry[profileKey] === 'object'
+    const entry = registry[profileKey] && typeof registry[profileKey] === 'object'
     ? registry[profileKey]
-    : { sourceKeys: [], mediaPaths: [], mediaHashes: [] };
+    : { sourceKeys: [], sourcePosts: [], mediaPaths: [], mediaHashes: [] };
 
   const sourceKeys = new Set(Array.isArray(entry.sourceKeys) ? entry.sourceKeys.filter(Boolean) : []);
+  const sourcePosts = new Set(Array.isArray(entry.sourcePosts) ? entry.sourcePosts.filter(Boolean) : []);
   const mediaPaths = new Set(Array.isArray(entry.mediaPaths) ? entry.mediaPaths.filter(Boolean) : []);
   const mediaHashes = new Set(Array.isArray(entry.mediaHashes) ? entry.mediaHashes.filter(Boolean) : []);
 
   if (candidate.sourceKey) {
     sourceKeys.add(candidate.sourceKey);
+  }
+  const sourcePostLabel = buildSourcePostLabel(candidate.channel, candidate.telegramPostId);
+  if (sourcePostLabel) {
+    sourcePosts.add(sourcePostLabel);
   }
   for (const mediaPath of (Array.isArray(candidate.paths) ? candidate.paths : [candidate.path]).filter(Boolean)) {
     mediaPaths.add(mediaPath);
@@ -285,6 +297,7 @@ function rememberRejectedSource(candidate, context = {}) {
 
   registry[profileKey] = {
     sourceKeys: [...sourceKeys].slice(-1000),
+    sourcePosts: [...sourcePosts].slice(-1000),
     mediaPaths: [...mediaPaths].slice(-1000),
     mediaHashes: [...mediaHashes].slice(-1000),
   };
@@ -478,6 +491,7 @@ function filterRejectedCandidates(candidates = [], profileId = null) {
   const rejected = getRejectedSourceMemory(profileId || 'default');
   return candidates.filter((candidate) =>
     !rejected.sourceKeys.has(candidate.sourceKey) &&
+    !rejected.sourcePosts.has(buildSourcePostLabel(candidate.channel, candidate.telegramPostId)) &&
     !rejected.mediaPaths.has(candidate.path) &&
     (!candidate.fileHash || !rejected.mediaHashes.has(candidate.fileHash))
   );
