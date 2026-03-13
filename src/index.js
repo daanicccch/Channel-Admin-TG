@@ -213,6 +213,9 @@ async function generateFromAnalysis(postType = 'post', analysisData = {}, option
       sentiment: analysisData.sentiment || {},
     },
     eventFingerprint: post._eventFingerprint || null,
+    sourceKey: post._leadMediaCandidate?.sourceKey || null,
+    sourceChannel: post._leadMediaCandidate?.channel || null,
+    sourceTelegramPostId: post._leadMediaCandidate?.telegramPostId || null,
   });
 
   logger.info(`Post generated for profile=${profile.id}`);

@@ -487,12 +487,13 @@ ${memoryPrompt}
       publishedOnly: true,
       withinHours: 72,
       currentEventFingerprint: sourceContext?.eventFingerprint || null,
+      currentSourceKey: sourceContext?.leadMediaCandidate?.sourceKey || '',
       currentMediaPaths: sourceContext?.leadMediaCandidate?.paths || [],
     });
 
     if (similarPost) {
       issues.push(
-        `Text is too close to a recently published post [${similarPost.type}] "${similarPost.title}" (similarity=${similarPost.score.toFixed(2)}${similarPost.sameMedia ? ', same_media=true' : ''}${similarPost.eventType ? `, event=${similarPost.eventType}` : ''}). Need a different angle/source and different media for the last 3 days.`
+        `Text is too close to a recently published post [${similarPost.type}] "${similarPost.title}" (similarity=${similarPost.score.toFixed(2)}${similarPost.sameSourceKey ? ', same_source=true' : ''}${similarPost.sameMedia ? ', same_media=true' : ''}${similarPost.eventType ? `, event=${similarPost.eventType}` : ''}). Need a different angle/source and different media for the last 3 days.`
       );
     }
 

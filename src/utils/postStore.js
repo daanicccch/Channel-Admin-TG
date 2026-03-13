@@ -190,6 +190,9 @@ function summarizePost(row, profileId = 'default') {
     publishedAt: row.published_at || null,
     mediaPath: row.media_path || null,
     mediaHash: getFileHash(row.media_path || ''),
+    sourceKey: engagement.sourceKey || null,
+    sourceChannel: engagement.sourceChannel || null,
+    sourceTelegramPostId: engagement.sourceTelegramPostId || null,
     text: plainText,
     title: getTitle(row.text || ''),
     opening: buildOpening(plainText),
@@ -298,6 +301,7 @@ function findSimilarPost(text, profileId = 'default', currentPostType = 'post', 
   const currentTitleTokens = uniqueTokens(getTitle(currentText), profileId);
   const currentOpening = buildOpening(currentText, 14).toLowerCase();
   const currentEventFingerprint = options.currentEventFingerprint || null;
+  const currentSourceKey = String(options.currentSourceKey || '').trim().toLowerCase();
   const currentMediaPaths = [...new Set(
     (Array.isArray(options.currentMediaPaths) ? options.currentMediaPaths : [])
       .map((item) => String(item || '').trim())
@@ -323,13 +327,14 @@ function findSimilarPost(text, profileId = 'default', currentPostType = 'post', 
     const sameMediaPath = Boolean(post.mediaPath) && currentMediaPaths.includes(String(post.mediaPath).trim());
     const sameMediaHash = Boolean(post.mediaHash) && currentMediaHashes.has(post.mediaHash);
     const hasSameMedia = sameMediaPath || sameMediaHash;
+    const sameSourceKey = currentSourceKey && String(post.sourceKey || '').trim().toLowerCase() === currentSourceKey;
     const score = Math.max(
       bodySimilarity,
       titleSimilarity + (sameOpening ? 0.2 : 0),
       eventMatch?.score || 0,
     );
     const threshold = post.type === currentPostType ? 0.5 : 0.72;
-    const mediaBackedDuplicate = hasSameMedia && (
+    const mediaBackedDuplicate = (hasSameMedia || sameSourceKey) && (
       score >= 0.34 ||
       sameOpening ||
       titleSimilarity >= 0.28 ||
@@ -344,6 +349,7 @@ function findSimilarPost(text, profileId = 'default', currentPostType = 'post', 
         publishedAt: post.publishedAt,
         score,
         eventType: post.eventFingerprint?.eventType || null,
+        sameSourceKey,
         sameMedia: hasSameMedia,
         sameMediaPath,
         sameMediaHash,
@@ -369,6 +375,9 @@ function insertGeneratedPost(post, options = {}) {
       JSON.stringify({
         ...(options.engagement || {}),
         eventFingerprint: options.eventFingerprint || null,
+        sourceKey: options.sourceKey || null,
+        sourceChannel: options.sourceChannel || null,
+        sourceTelegramPostId: options.sourceTelegramPostId || null,
       }),
     ],
   );
