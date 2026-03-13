@@ -459,7 +459,7 @@ function shuffleArray(items = []) {
   return copy;
 }
 
-function diversifyCandidatesByChannel(candidates = []) {
+function diversifyCandidatesByChannel(candidates = [], options = {}) {
   const buckets = new Map();
 
   for (const candidate of candidates) {
@@ -470,21 +470,85 @@ function diversifyCandidatesByChannel(candidates = []) {
     buckets.get(channelKey).push(candidate);
   }
 
-  const channelOrder = shuffleArray([...buckets.keys()]);
-  const diversified = [];
-  let added = true;
+  const seenSet = new Set(
+    (options.seenChannels || [])
+      .map((item) => String(item || '').trim().toLowerCase())
+      .filter(Boolean),
+  );
+  const currentChannel = String(options.currentChannel || '').trim().toLowerCase();
+  const rankedBuckets = [...buckets.entries()]
+    .map(([channelKey, bucket]) => ({
+      channelKey,
+      bucket: [...bucket],
+      seen: seenSet.has(channelKey),
+      isCurrent: currentChannel && channelKey === currentChannel,
+      recencyIndex: Number.isFinite(bucket[0]?.channelRecencyIndex) ? bucket[0].channelRecencyIndex : -1,
+      topFreshness: bucket[0]?.freshnessScore || 0,
+      topScore: bucket[0]?.totalScore || 0,
+    }))
+    .sort((left, right) =>
+      Number(left.seen) - Number(right.seen) ||
+      Number(left.isCurrent) - Number(right.isCurrent) ||
+      (left.recencyIndex - right.recencyIndex) ||
+      (right.topFreshness - left.topFreshness) ||
+      (right.topScore - left.topScore) ||
+      left.channelKey.localeCompare(right.channelKey)
+    );
 
-  while (added) {
-    added = false;
-    for (const channelKey of channelOrder) {
-      const bucket = buckets.get(channelKey) || [];
-      if (bucket.length === 0) continue;
-      diversified.push(bucket.shift());
+  const diversified = [];
+  let roundIndex = 0;
+
+  while (true) {
+    let added = false;
+
+    for (const entry of rankedBuckets) {
+      const candidate = entry.bucket[roundIndex];
+      if (!candidate) continue;
+      diversified.push(candidate);
       added = true;
     }
+
+    if (!added) {
+      break;
+    }
+
+    roundIndex += 1;
   }
 
   return diversified;
+}
+
+function chooseChannelFirstCandidate(candidates = [], options = {}) {
+  const buckets = new Map();
+
+  for (const candidate of candidates) {
+    const channelKey = String(candidate.channel || '').trim().toLowerCase() || 'unknown';
+    if (!buckets.has(channelKey)) {
+      buckets.set(channelKey, []);
+    }
+    buckets.get(channelKey).push(candidate);
+  }
+
+  const seenSet = new Set((options.seenChannels || []).map((item) => String(item || '').trim().toLowerCase()).filter(Boolean));
+  const currentChannel = String(options.currentChannel || '').trim().toLowerCase();
+  const channelRank = [...buckets.entries()]
+    .map(([channelKey, bucket]) => ({
+      channelKey,
+      top: bucket[0],
+      bucket,
+      seen: seenSet.has(channelKey),
+      isCurrent: currentChannel && channelKey === currentChannel,
+      recencyIndex: Number.isFinite(bucket[0]?.channelRecencyIndex) ? bucket[0].channelRecencyIndex : -1,
+    }))
+    .sort((left, right) =>
+      Number(left.seen) - Number(right.seen) ||
+      Number(left.isCurrent) - Number(right.isCurrent) ||
+      (left.recencyIndex - right.recencyIndex) ||
+      ((right.top?.freshnessScore || 0) - (left.top?.freshnessScore || 0)) ||
+      ((right.top?.totalScore || 0) - (left.top?.totalScore || 0))
+    );
+
+  return channelRank[0]?.top || null;
 }
 
 function filterRejectedCandidates(candidates = [], profileId = null) {
@@ -589,9 +653,10 @@ function getRankedCandidates(clusters, postText = '', options = {}) {
   const profileId = options.profileId || null;
   const context = buildSelectionContext(clusters, postText);
   const candidates = [];
+  const recentShownChannels = getRecentShownChannels(profileId || 'default');
 
   if (Array.isArray(clusters) && clusters.length > 0) {
-    clusters.slice(0, 4).forEach((cluster, clusterIndex) => {
+    clusters.slice(0, 10).forEach((cluster, clusterIndex) => {
       const rows = getRowsForClusterReferences(cluster, 40, profileId);
       candidates.push(...rowsToCandidates(rows, 'cluster', clusterIndex));
     });
@@ -611,7 +676,15 @@ function getRankedCandidates(clusters, postText = '', options = {}) {
     );
 
   const filtered = filterRejectedCandidates(ranked, profileId);
-  return diversifyCandidatesByChannel(filtered);
+  return diversifyCandidatesByChannel(filtered, {
+    currentChannel: options.currentChannel || '',
+    seenChannels: [
+      ...((Array.isArray(options.seenChannels) ? options.seenChannels : [])
+        .map((item) => String(item || '').trim().toLowerCase())
+        .filter(Boolean)),
+      ...recentShownChannels,
+    ],
+  });
 }
 
 function rankUnusedFirst(candidates, excludedSourceKeys = []) {
@@ -680,7 +753,8 @@ function selectLeadMediaPost(clusters, postText = '', options = {}) {
     (!candidate.fileHash || !publishedHashSet.has(candidate.fileHash))
   );
   const { unused, available } = rankUnusedFirst(unpublished, options.excludedSourceKeys || []);
-  const best = options.allowUsedSources ? (unused[0] || available[0] || null) : (unused[0] || null);
+  const pool = options.allowUsedSources ? (unused.length > 0 ? unused : available) : unused;
+  const best = pool[0] || null;
   if (!best) {
     return null;
   }
@@ -729,8 +803,15 @@ function selectAlternativeLeadMediaPost(clusters, excludedSources = [], postText
   const { unused, available } = rankUnusedFirst(unpublished, excludedSources);
   const availableUnused = unused.filter((candidate) => !excludeSet.has(candidate.sourceKey));
   const availableAll = available.filter((candidate) => !excludeSet.has(candidate.sourceKey));
-  const best = pickPreferredAlternative(
+  const orderedPool = diversifyCandidatesByChannel(
     availableUnused.length > 0 ? availableUnused : (options.allowUsedSources ? availableAll : []),
+    {
+      currentChannel: options.currentChannel || '',
+      seenChannels,
+    },
+  );
+  const best = orderedPool[0] || pickPreferredAlternative(
+    orderedPool,
     options.currentChannel || '',
     seenChannels,
   );
