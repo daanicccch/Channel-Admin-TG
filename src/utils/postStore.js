@@ -1,5 +1,8 @@
+const fs = require('fs');
+const crypto = require('crypto');
 const { queryAll, queryOne, runSql } = require('./dbHelpers');
 const { getTelegramVisibleText } = require('../generator/formatBuilder');
+const mediaHashCache = new Map();
 const MEMORY_STOP_WORDS = new Set([
   'это', 'как', 'что', 'для', 'или', 'при', 'после', 'сегодня', 'вчера', 'завтра',
   'когда', 'который', 'которая', 'которые', 'такой', 'такая', 'такие', 'просто',
@@ -156,6 +159,23 @@ function eventFingerprintsMatch(currentFingerprint, previousFingerprint) {
   return null;
 }
 
+function getFileHash(filePath) {
+  const normalizedPath = String(filePath || '').trim();
+  if (!normalizedPath) return '';
+
+  const cached = mediaHashCache.get(normalizedPath);
+  if (cached) return cached;
+
+  try {
+    const buffer = fs.readFileSync(normalizedPath);
+    const hash = crypto.createHash('sha1').update(buffer).digest('hex');
+    mediaHashCache.set(normalizedPath, hash);
+    return hash;
+  } catch {
+    return '';
+  }
+}
+
 function summarizePost(row, profileId = 'default') {
   const plainText = toVisibleText(row.text || '');
   let engagement = {};
@@ -168,6 +188,8 @@ function summarizePost(row, profileId = 'default') {
     id: row.id,
     type: row.type || 'post',
     publishedAt: row.published_at || null,
+    mediaPath: row.media_path || null,
+    mediaHash: getFileHash(row.media_path || ''),
     text: plainText,
     title: getTitle(row.text || ''),
     opening: buildOpening(plainText),
@@ -176,17 +198,29 @@ function summarizePost(row, profileId = 'default') {
   };
 }
 
-function getRecentPosts(profileId = 'default', limit = 10) {
+function getRecentPosts(profileId = 'default', limit = 10, options = {}) {
   const safeLimit = Math.max(1, Math.min(Number(limit) || 10, 30));
+  const whereParts = ['profile_id = ?'];
+  const params = [profileId];
+
+  if (options.publishedOnly) {
+    whereParts.push('published_at IS NOT NULL');
+  }
+
+  if (Number.isFinite(options.withinHours) && options.withinHours > 0) {
+    whereParts.push(`published_at >= datetime('now', ?)`);
+    params.push(`-${Math.floor(options.withinHours)} hours`);
+  }
+
   const rows = queryAll(
     `
-      SELECT id, type, text, published_at, engagement
+      SELECT id, type, text, published_at, engagement, media_path
       FROM posts
-      WHERE profile_id = ?
-      ORDER BY id DESC
+      WHERE ${whereParts.join('\n        AND ')}
+      ORDER BY published_at DESC, id DESC
       LIMIT ${safeLimit}
     `,
-    [profileId],
+    params,
   );
 
   return rows.map((row) => summarizePost(row, profileId));

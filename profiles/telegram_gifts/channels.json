@@ -19,6 +19,15 @@
       "is_check": false
     },
     {
+      "username": "detkidurova",
+      "name": "Дети Дурова - Новости",
+      "priority": "high",
+      "language": "ru",
+      "category": "telegram_gifts",
+      "scrape_interval_minutes": 10,
+      "is_check": false
+    },
+    {
       "username": "gryazniytelegram",
       "name": "ГРЯЗНЫЙ TELEGRAM",
       "priority": "high",
@@ -48,6 +57,24 @@
     {
       "username": "podarkigift",
       "name": "podarki v telegram",
+      "priority": "high",
+      "language": "ru",
+      "category": "telegram_gifts",
+      "scrape_interval_minutes": 10,
+      "is_check": false
+    },
+    {
+      "username": "groza",
+      "name": "BALENCIAGA",
+      "priority": "high",
+      "language": "ru",
+      "category": "telegram_gifts",
+      "scrape_interval_minutes": 10,
+      "is_check": false
+    },
+    {
+      "username": "durovgoyda",
+      "name": "Гои Дурова",
       "priority": "high",
       "language": "ru",
       "category": "telegram_gifts",
