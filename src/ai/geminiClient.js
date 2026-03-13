@@ -238,6 +238,13 @@ ${String(text).substring(0, 12000)}`;
     const message = String(err?.message || '');
     const status = err?.status;
 
+    const suspendedKey =
+      status === 403 &&
+      /CONSUMER_SUSPENDED|consumer .* has been suspended|permission denied: consumer/i.test(message);
+    if (suspendedKey) {
+      return { type: 'disabled', reason: 'consumer suspended' };
+    }
+
     const leakedKey =
       status === 403 &&
       /reported as leaked|use another api key/i.test(message);

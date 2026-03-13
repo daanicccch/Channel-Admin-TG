@@ -145,13 +145,7 @@ class PostGenerator {
 
     if (!result || !result.text) {
       logger.error('PostGenerator: failed to generate post after all retries');
-      return {
-        text: '',
-        media: { type: 'none', path: null, paths: [] },
-        keyboard: [],
-        hashtags: '',
-        postType: type,
-      };
+      throw new Error(`PostGenerator: failed to generate ${type} for profile=${profileId}`);
     }
 
     const formattedText = this._applySourceCustomEmojiMarkup(
