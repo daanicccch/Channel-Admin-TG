@@ -9,7 +9,8 @@ const { inferMediaTypeFromPath } = require('../utils/mediaUtils');
 const VALID_TYPES = ['post', 'alert', 'weekly'];
 const pendingPosts = new Map();
 let idCounter = 0;
-const DEFAULT_MEDIA_COUNT = Math.max(0, Math.min(parseInt(process.env.TG_MAX_MEDIA_PER_POST || '1', 10), 1));
+const MAX_MEDIA_COUNT = Math.max(0, Math.min(parseInt(process.env.TG_MAX_MEDIA_PER_POST || '3', 10), 10));
+const DEFAULT_MEDIA_COUNT = MAX_MEDIA_COUNT;
 
 function getAdminChatIds() {
   const ids = Array.isArray(config.telegram.adminChatIds)
@@ -61,6 +62,19 @@ function profileSelectionKeyboard(postType = 'post', mediaCount = DEFAULT_MEDIA_
 
 function previewKeyboard(id, postType, mediaCount = DEFAULT_MEDIA_COUNT) {
   const countLabel = `Media: ${mediaCount}`;
+  const mediaCountButtons = [];
+
+  for (let count = 0; count <= MAX_MEDIA_COUNT; count += 1) {
+    mediaCountButtons.push({
+      text: String(count),
+      callback_data: `cmd_media_count_${id}_${count}`,
+    });
+  }
+  const mediaCountRows = [];
+  for (let index = 0; index < mediaCountButtons.length; index += 5) {
+    mediaCountRows.push(mediaCountButtons.slice(index, index + 5));
+  }
+
   return {
     inline_keyboard: [
       [
@@ -73,10 +87,7 @@ function previewKeyboard(id, postType, mediaCount = DEFAULT_MEDIA_COUNT) {
       [
         { text: countLabel, callback_data: `noop_${id}` },
       ],
-      [
-        { text: '0', callback_data: `cmd_media_count_${id}_0` },
-        { text: '1', callback_data: `cmd_media_count_${id}_1` },
-      ],
+      ...mediaCountRows,
       [
         { text: 'Cancel', callback_data: `cmd_cancel_${id}` },
       ],
@@ -100,7 +111,7 @@ function setMediaPaths(post, paths) {
 }
 
 function applyMediaCount(entry, requestedCount) {
-  const count = Math.max(0, Math.min(Number(requestedCount) || 0, 1));
+  const count = Math.max(0, Math.min(Number(requestedCount) || 0, MAX_MEDIA_COUNT));
   entry.mediaCount = count;
 
   if (count === 0) {
@@ -109,7 +120,7 @@ function applyMediaCount(entry, requestedCount) {
   }
 
   const current = getMediaPaths(entry.post);
-  setMediaPaths(entry.post, current.slice(0, 1));
+  setMediaPaths(entry.post, current.slice(0, count));
 }
 
 function makePendingEntry(post, type, mediaCount = DEFAULT_MEDIA_COUNT, sourceHistory = [], channelHistory = [], rejectionState = {}) {
@@ -200,6 +211,28 @@ async function sendPreview(bot, chatId, entry, id, title = '<b>Preview</b>') {
   const header = `${title} (${entry.profileTitle}, ID: ${id}, type: ${entry.type})\n${formatSourceLine(entry.post)}`;
   const keyboard = previewKeyboard(id, entry.type, entry.mediaCount);
   const mediaPaths = getMediaPaths(entry.post);
+
+  if (mediaPaths.length > 1) {
+    const mediaGroup = mediaPaths.slice(0, 10).map((mediaPath, index) => {
+      const item = {
+        type: inferMediaTypeFromPath(mediaPath) === 'video' ? 'video' : 'photo',
+        media: { source: mediaPath },
+      };
+      if (index === 0) {
+        const caption = header.length <= 1024 ? header : header.slice(0, 1024);
+        item.caption = caption;
+        item.parse_mode = 'HTML';
+      }
+      return item;
+    });
+
+    await bot.telegram.sendMediaGroup(chatId, mediaGroup);
+    const message = await bot.telegram.sendMessage(chatId, `${header}\n\n${previewText}`, {
+      parse_mode: 'HTML',
+      reply_markup: keyboard,
+    });
+    return [{ chatId, messageId: message.message_id }];
+  }
 
   if (mediaPaths.length === 1) {
     const caption = `${header}\n\n${previewText}`;
@@ -375,7 +408,7 @@ function setupCommands(bot, { generateOnly, generateFromAnalysis, publisher }) {
       });
     }
 
-    const initialMediaCount = Math.max(0, Math.min(Number(parsed.mediaCount) || DEFAULT_MEDIA_COUNT, 1));
+    const initialMediaCount = Math.max(0, Math.min(Number(parsed.mediaCount) || DEFAULT_MEDIA_COUNT, MAX_MEDIA_COUNT));
     await startGeneration(bot, ctx.chat.id, parsed.profile, parsed.postType, initialMediaCount, generateOnly);
   }
 
@@ -568,7 +601,7 @@ function setupCommands(bot, { generateOnly, generateFromAnalysis, publisher }) {
     }
 
     applyMediaCount(entry, count);
-    await ctx.answerCbQuery(`Images: ${entry.mediaCount}`);
+    await ctx.answerCbQuery(`Media: ${entry.mediaCount}`);
     await clearPreviewKeyboards(bot, entry.previewRefs);
     rememberPreviewSource(entry);
     await sendPreviewToAdmins(bot, entry, id, '<b>Preview (updated)</b>');
@@ -576,7 +609,7 @@ function setupCommands(bot, { generateOnly, generateFromAnalysis, publisher }) {
 
   bot.action(/^noop_\d+$/, async (ctx) => {
     if (!(await ensureAdminCallbackAccess(ctx))) return;
-    await ctx.answerCbQuery('Select image count below');
+    await ctx.answerCbQuery('Select media count below');
   });
 
   bot.action(/^cmd_cancel_(\d+)$/, async (ctx) => {

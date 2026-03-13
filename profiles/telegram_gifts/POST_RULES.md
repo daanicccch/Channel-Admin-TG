@@ -11,11 +11,22 @@
 - Do not write generic openings like `Пока рынок ждёт`, `На рынке подарков`, `Что по рынку`, if there is a concrete event.
 - Do not glue several prices into one dense sentence.
 - Do not turn service metrics into a fake market overview if the source channels are talking about one exact case.
+- Never mention or name the source channel inside the generated post.
+- No constructions like `инсайдеры X намекают`, `канал Y подсветил`, `по данным канала Z`.
 - Do not write in ad-voice: no `иксы`, `машина для печатания денег`, `золотой билет`, `залетать`, `лутать`, `пассив`, `взлетела до небес`.
 - Do not dramatize short seasonal or short-lived events as tragedy, legend, or irreversible loss.
 - If Telegram added something for a holiday or a short window and then removed it, describe the timing plainly.
 - Do not write `пантеон легенд`, `символ упущенных возможностей`, `удар для коллекционеров`, `полная зачистка`, `теперь уже невозможно`, unless the source explicitly says permanence.
 - No fake finality. Temporary removal is not `навсегда` unless the source clearly confirms it.
+- Do not call Telegram gifts a `игра`, `игровой предмет`, `скин из игры`, or use any gaming frame unless the source is explicitly about a game mode.
+- Do not invent `совершенно новый вариант`, `новый тип подарка`, `новая механика`, if the source only shows or hints at a model update.
+- If the topic is gift upgrades, treat it precisely: an upgrade means the release or appearance of models for a specific existing gift.
+
+## Domain accuracy
+- Telegram gifts are gifts inside Telegram, not in-game items.
+- A gift can be sent to a user, saved to profile, or exchanged for stars if the platform allows it.
+- Rare gifts are limited releases; do not call every gift `NFT` unless the source is explicitly about collectible / upgraded gifts or secondary market activity.
+- If the source only shows a visual model, write about a model, appearance, or preparation for an upgrade, not about a fully released feature.
 
 ## What actually matters
 - Rare drop.
@@ -58,6 +69,7 @@
 - Allowed: `выпал`, `ушёл`, `слили`, `забрали`, `подсветили`, `ждём`, `перелили`, `оффер`.
 - Mild irony is okay.
 - Do not drift into generic crypto slang if the post is about gifts.
+- Prefer direct factual phrasing over attribution phrasing: state the event, not who posted it first.
 
 ## Must keep
 - Gift names.

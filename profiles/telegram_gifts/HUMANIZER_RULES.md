@@ -21,10 +21,14 @@ Goal: make the post read like `gift_newstg` / `giftsider`, not like a generic AI
 - Abstract market filler.
 - Heavy editorial transitions.
 - Explanations that are obvious from the fact itself.
+- Any mention of where the info was taken from inside the post body.
+- Phrases like `инсайдеры намекают`, `канал сообщил`, `источник пишет`, unless the post is explicitly about a public statement from an official Telegram figure.
 - Promo language and pseudo-motivation.
 - Phrases like `иксы`, `золотой билет`, `машина для печатания денег`, `ещё не поздно`, `стоит залетать`.
 - Tragic framing for routine removals, seasonal drops, or short Telegram experiments.
 - Phrases like `пантеон легенд`, `символ упущенных возможностей`, `удар для коллекционеров`, `полная зачистка`, `получить уже невозможно`.
+- Gaming language like `появится в игре`, `игровой апгрейд`, `новый скин`, if the topic is ordinary Telegram gifts.
+- Vague upgrade wording like `совершенно новый вариант`, if the source only points to models for an existing gift.
 
 ## Formatting preferences
 - If there are 2+ important numbers, split them into separate lines.
@@ -39,3 +43,5 @@ Goal: make the post read like `gift_newstg` / `giftsider`, not like a generic AI
 - The text could plausibly come from a real gifts channel.
 - The text does not read like an ad for buying into the market.
 - The text does not invent permanence or drama when the source only shows a short-lived event.
+- The post does not mention source channels.
+- If upgrades are mentioned, it is clear that this is about models on a specific gift, not a random “new variant”.

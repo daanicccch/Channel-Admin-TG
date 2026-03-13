@@ -6,7 +6,7 @@ const { queryAll, runSql } = require('../utils/dbHelpers');
 const logger = require('../utils/logger');
 const { inferMediaTypeFromPath } = require('../utils/mediaUtils');
 
-const MAX_MEDIA_PER_POST = parseInt(process.env.TG_MAX_MEDIA_PER_POST || '1', 10);
+const MAX_MEDIA_PER_POST = parseInt(process.env.TG_MAX_MEDIA_PER_POST || '3', 10);
 const FALLBACK_MEDIA_LOOKBACK_HOURS = parseInt(process.env.TG_FALLBACK_MEDIA_LOOKBACK_HOURS || '24', 10);
 const USED_MEDIA_FILE = path.join(config.paths.data, 'used_media.json');
 const REJECTED_SOURCE_FILE = path.join(config.paths.data, 'rejected_sources.json');

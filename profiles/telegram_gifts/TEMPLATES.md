@@ -30,6 +30,9 @@ Example:
 ## Upgrade / teaser post
 - Length: 180-600 chars.
 - Use when the whole point is a movement in emoji pack, lineup reorder, or visible prep for upgrades.
+- If a model is shown for a known gift, describe it as a future model or upgrade model for that exact gift.
+- Do not call it a `new variant` unless the source explicitly says a separate new gift is coming.
+- Do not write that it will `appear in the game`; say `появится в Telegram`, `в подарках`, or `в апгрейдах`, if release is not confirmed yet.
 
 Example:
 ```html
@@ -40,6 +43,13 @@ Example:
 🎁🎁🎁🎁🎁🎁🎁
 
 За месяц он уже светил готовые модели именно для этих коллекций.
+```
+
+Alternative example:
+```html
+🍦 <b>У «Пломбира» засветилась новая модель</b>
+
+Креативный директор показал одну из будущих моделей для <b>Пломбира</b>.
 ```
 
 ## Trade / exchange post
