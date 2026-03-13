@@ -1,0 +1,25 @@
+{
+  "channels": [
+    {
+      "username": "tennisprime0",
+      "name": "Tennis Prime",
+      "priority": "high",
+      "language": "ru",
+      "category": "analytics",
+      "scrape_interval_minutes": 20
+    },
+    {
+      "username": "realbestov1",
+      "name": "Real Bestov",
+      "priority": "high",
+      "language": "ru",
+      "category": "memecoins",
+      "scrape_interval_minutes": 15
+    }
+  ],
+  "settings": {
+    "max_posts_per_channel": 50,
+    "lookback_hours": 24,
+    "min_views_threshold": 100
+  }
+}

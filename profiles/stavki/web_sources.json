@@ -1,0 +1,24 @@
+{
+  "apis": [
+    {
+      "name": "flashscore",
+      "base_url": "https://www.flashscore.com/",
+      "api_url": "https://www.flashscore.com/"
+    },
+    {
+      "name": "oddsportal",
+      "base_url": "https://www.oddsportal.com/",
+      "api_url": "https://www.oddsportal.com/matches/"
+    },
+    {
+      "name": "betfair_live",
+      "base_url": "https://www.betfair.com/",
+      "api_url": "https://www.betfair.com/exchange/plus/football"
+    },
+    {
+      "name": "sofascore",
+      "base_url": "https://www.sofascore.com/",
+      "api_url": "https://www.sofascore.com/"
+    }
+  ]
+}
