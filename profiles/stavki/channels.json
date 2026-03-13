@@ -6,7 +6,8 @@
       "priority": "high",
       "language": "ru",
       "category": "analytics",
-      "scrape_interval_minutes": 20
+      "scrape_interval_minutes": 20,
+      "is_check": false
     },
     {
       "username": "realbestov1",
@@ -14,7 +15,8 @@
       "priority": "high",
       "language": "ru",
       "category": "memecoins",
-      "scrape_interval_minutes": 15
+      "scrape_interval_minutes": 15,
+      "is_check": false
     }
   ],
   "settings": {
