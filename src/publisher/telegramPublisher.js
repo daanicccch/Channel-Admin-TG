@@ -4,6 +4,7 @@ const logger = require('../utils/logger');
 const { getTelegramEntityLength } = require('../generator/formatBuilder');
 const { TelegramUserPublisher } = require('./telegramUserPublisher');
 const { markPostPublished } = require('../utils/postStore');
+const { inferMediaTypeFromPath } = require('../utils/mediaUtils');
 
 class TelegramPublisher {
   constructor() {
@@ -87,11 +88,15 @@ class TelegramPublisher {
 
   async _sendPost(channelId, post, replyMarkup, mediaPaths) {
     const textLength = getTelegramEntityLength(post.text);
+    const mediaType = post.media?.type || inferMediaTypeFromPath(mediaPaths[0]);
 
-    if (post.media && post.media.type === 'photo' && mediaPaths.length > 0) {
+    if (mediaPaths.length > 0 && (mediaType === 'photo' || mediaType === 'video')) {
       if (mediaPaths.length > 1) {
         const mediaGroup = mediaPaths.slice(0, 10).map((mediaPath, index) => {
-          const item = { type: 'photo', media: { source: mediaPath } };
+          const item = {
+            type: inferMediaTypeFromPath(mediaPath) === 'video' ? 'video' : 'photo',
+            media: { source: mediaPath },
+          };
           if (index === 0 && textLength <= 1024) {
             item.caption = post.text;
             item.parse_mode = 'HTML';
@@ -118,18 +123,27 @@ class TelegramPublisher {
       }
 
       if (textLength <= 1024) {
-        return this.bot.telegram.sendPhoto(
-          channelId,
-          { source: mediaPaths[0] },
-          {
+        if (mediaType === 'video') {
+          return this.bot.telegram.sendVideo(channelId, { source: mediaPaths[0] }, {
             caption: post.text,
             parse_mode: 'HTML',
             reply_markup: replyMarkup,
-          },
-        );
+          });
+        }
+
+        return this.bot.telegram.sendPhoto(channelId, { source: mediaPaths[0] }, {
+          caption: post.text,
+          parse_mode: 'HTML',
+          reply_markup: replyMarkup,
+        });
       }
 
-      await this.bot.telegram.sendPhoto(channelId, { source: mediaPaths[0] });
+      if (mediaType === 'video') {
+        await this.bot.telegram.sendVideo(channelId, { source: mediaPaths[0] });
+      } else {
+        await this.bot.telegram.sendPhoto(channelId, { source: mediaPaths[0] });
+      }
+
       return this.bot.telegram.sendMessage(channelId, post.text, {
         parse_mode: 'HTML',
         reply_markup: replyMarkup,
@@ -175,10 +189,14 @@ class TelegramPublisher {
     const mediaPaths = Array.isArray(post.media?.paths)
       ? post.media.paths.filter(Boolean)
       : (post.media?.path ? [post.media.path] : []);
+    const mediaType = post.media?.type || inferMediaTypeFromPath(mediaPaths[0]);
 
     if (mediaPaths.length > 1) {
       const mediaGroup = mediaPaths.slice(0, 10).map((mediaPath, index) => {
-        const item = { type: 'photo', media: { source: mediaPath } };
+        const item = {
+          type: inferMediaTypeFromPath(mediaPath) === 'video' ? 'video' : 'photo',
+          media: { source: mediaPath },
+        };
         if (index === 0) {
           const cap = `${header} (ID: ${postId})`;
           item.caption = cap.length <= 1024 ? cap : cap.slice(0, 1024);
@@ -201,19 +219,25 @@ class TelegramPublisher {
     if (mediaPaths.length === 1) {
       const caption = `${header} (ID: ${postId})\n\n${previewText}`;
       if (previewCaptionLength <= 1024) {
-        const message = await this.bot.telegram.sendPhoto(
-          adminChatId,
-          { source: mediaPaths[0] },
-          {
+        const message = mediaType === 'video'
+          ? await this.bot.telegram.sendVideo(adminChatId, { source: mediaPaths[0] }, {
             caption,
             parse_mode: 'HTML',
             reply_markup: keyboard,
-          },
-        );
+          })
+          : await this.bot.telegram.sendPhoto(adminChatId, { source: mediaPaths[0] }, {
+            caption,
+            parse_mode: 'HTML',
+            reply_markup: keyboard,
+          });
         return [{ chatId: adminChatId, messageId: message.message_id }];
       }
 
-      await this.bot.telegram.sendPhoto(adminChatId, { source: mediaPaths[0] });
+      if (mediaType === 'video') {
+        await this.bot.telegram.sendVideo(adminChatId, { source: mediaPaths[0] });
+      } else {
+        await this.bot.telegram.sendPhoto(adminChatId, { source: mediaPaths[0] });
+      }
       const message = await this.bot.telegram.sendMessage(
         adminChatId,
         `${header} (ID: ${postId})\n\n${previewText}`,

@@ -4,6 +4,7 @@ const styleEngine = require('./styleEngine');
 const formatBuilder = require('./formatBuilder');
 const mediaHandler = require('./mediaHandler');
 const postStore = require('../utils/postStore');
+const { inferMediaTypeFromPath } = require('../utils/mediaUtils');
 
 const MAX_RETRIES = 2;
 const CAPTION_SAFE_TEXT_LIMIT = parseInt(process.env.TG_CAPTION_SAFE_TEXT_LIMIT || '900', 10);
@@ -187,7 +188,7 @@ class PostGenerator {
         : [leadMediaCandidate.path].filter(Boolean);
 
       media = {
-        type: 'photo',
+        type: leadMediaCandidate.mediaType || inferMediaTypeFromPath(sourcePaths[0]),
         path: sourcePaths[0] || null,
         paths: sourcePaths,
       };

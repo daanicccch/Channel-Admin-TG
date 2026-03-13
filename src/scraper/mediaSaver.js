@@ -4,6 +4,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { config } = require('../config');
 const logger = require('../utils/logger');
+const { getMessageFileExtension, getMessageMediaType } = require('../utils/mediaUtils');
 
 const mediaCacheDir = config.paths.mediaCache;
 
@@ -21,6 +22,7 @@ if (!fs.existsSync(mediaCacheDir)) {
  */
 async function downloadMedia(client, message, channel) {
   try {
+    const mediaType = getMessageMediaType(message);
     const buffer = await client.downloadMedia(message);
     if (!buffer || buffer.length === 0) {
       logger.warn(`mediaSaver: пустой медиа-буфер для ${channel}/${message.id}`);
@@ -28,14 +30,17 @@ async function downloadMedia(client, message, channel) {
     }
 
     const hash = crypto.createHash('md5').update(buffer).digest('hex').substring(0, 8);
-    const filename = `${channel}_${message.id}_${hash}.jpg`;
+    const filename = `${channel}_${message.id}_${hash}${getMessageFileExtension(message, mediaType)}`;
     const filePath = path.join(mediaCacheDir, filename);
 
-    // Resize to max 1280px width, convert to JPEG 85%
-    await sharp(buffer)
-      .resize({ width: 1280, withoutEnlargement: true })
-      .jpeg({ quality: 85 })
-      .toFile(filePath);
+    if (mediaType === 'video') {
+      fs.writeFileSync(filePath, buffer);
+    } else {
+      await sharp(buffer)
+        .resize({ width: 1280, withoutEnlargement: true })
+        .jpeg({ quality: 85 })
+        .toFile(filePath);
+    }
 
     logger.debug(`mediaSaver: сохранено ${filename}`);
     return filePath;

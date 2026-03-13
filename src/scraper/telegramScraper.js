@@ -9,6 +9,7 @@ const logger = require('../utils/logger');
 const mediaSaver = require('./mediaSaver');
 const fs = require('fs');
 const path = require('path');
+const { getMessageMediaType } = require('../utils/mediaUtils');
 
 // Patch GramJS update loop: for scraping we do not need updates/ping loop.
 updates._updateLoop = async function () {};
@@ -16,6 +17,7 @@ updates._updateLoop = async function () {};
 const ENTITY_TIMEOUT_MS = parseInt(process.env.TG_ENTITY_TIMEOUT_MS || '15000', 10);
 const MESSAGES_TIMEOUT_MS = parseInt(process.env.TG_MESSAGES_TIMEOUT_MS || '30000', 10);
 const MEDIA_TIMEOUT_MS = parseInt(process.env.TG_MEDIA_TIMEOUT_MS || '12000', 10);
+const VIDEO_MEDIA_TIMEOUT_MS = parseInt(process.env.TG_VIDEO_TIMEOUT_MS || '90000', 10);
 const MAX_MEDIA_PER_CHANNEL = parseInt(process.env.TG_MAX_MEDIA_PER_CHANNEL || '8', 10);
 
 function normalizeTelegramDate(value) {
@@ -63,6 +65,25 @@ class TelegramScraper {
     this.apiHash = config.telegram.apiHash;
     this.sessionString = config.telegram.sessionString;
     this.client = null;
+    this.pendingMediaDownloads = new Set();
+  }
+
+  _trackPendingMediaDownload(promise) {
+    this.pendingMediaDownloads.add(promise);
+    promise.finally(() => {
+      this.pendingMediaDownloads.delete(promise);
+    });
+    return promise;
+  }
+
+  async _waitForPendingMediaDownloads() {
+    if (this.pendingMediaDownloads.size === 0) {
+      return;
+    }
+
+    const pending = Array.from(this.pendingMediaDownloads);
+    logger.info(`TelegramScraper: waiting for ${pending.length} pending media download(s) before disconnect`);
+    await Promise.allSettled(pending);
   }
 
   async connect() {
@@ -155,12 +176,16 @@ class TelegramScraper {
         }));
       }
 
-      const hasVisualMedia = Boolean(msg.photo);
+      const mediaType = getMessageMediaType(msg);
+      const hasVisualMedia = mediaType === 'photo' || mediaType === 'video';
       if (hasVisualMedia && post.mediaPaths.length < MAX_MEDIA_PER_CHANNEL) {
         try {
+          const mediaDownload = this._trackPendingMediaDownload(
+            mediaSaver.downloadMedia(this.client, msg, username)
+          );
           const mediaPath = await withTimeout(
-            mediaSaver.downloadMedia(this.client, msg, username),
-            MEDIA_TIMEOUT_MS,
+            mediaDownload,
+            mediaType === 'video' ? VIDEO_MEDIA_TIMEOUT_MS : MEDIA_TIMEOUT_MS,
             `downloadMedia:${username}/${msg.id}`
           );
           if (mediaPath && !post.mediaPaths.includes(mediaPath)) {
@@ -298,6 +323,7 @@ class TelegramScraper {
   async disconnect() {
     if (this.client) {
       try {
+        await this._waitForPendingMediaDownloads();
         await this.client.disconnect();
       } catch (err) {
         logger.debug(`TelegramScraper disconnect: ${err.message}`);

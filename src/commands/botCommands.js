@@ -4,6 +4,7 @@ const logger = require('../utils/logger');
 const mediaHandler = require('../generator/mediaHandler');
 const { getTelegramEntityLength } = require('../generator/formatBuilder');
 const { getChannelProfiles, getChannelProfile } = require('../channelProfiles');
+const { inferMediaTypeFromPath } = require('../utils/mediaUtils');
 
 const VALID_TYPES = ['post', 'alert', 'weekly'];
 const pendingPosts = new Map();
@@ -59,7 +60,7 @@ function profileSelectionKeyboard(postType = 'post', mediaCount = DEFAULT_MEDIA_
 }
 
 function previewKeyboard(id, postType, mediaCount = DEFAULT_MEDIA_COUNT) {
-  const countLabel = `Images: ${mediaCount}`;
+  const countLabel = `Media: ${mediaCount}`;
   return {
     inline_keyboard: [
       [
@@ -95,7 +96,7 @@ function setMediaPaths(post, paths) {
     post.media = { type: 'none', path: null, paths: [] };
     return;
   }
-  post.media = { type: 'photo', path: next[0], paths: next };
+  post.media = { type: inferMediaTypeFromPath(next[0]), path: next[0], paths: next };
 }
 
 function applyMediaCount(entry, requestedCount) {
@@ -203,11 +204,18 @@ async function sendPreview(bot, chatId, entry, id, title = '<b>Preview</b>') {
   if (mediaPaths.length === 1) {
     const caption = `${header}\n\n${previewText}`;
     if (getTelegramEntityLength(caption) <= 1024) {
-      const message = await bot.telegram.sendPhoto(chatId, { source: mediaPaths[0] }, {
-        caption,
-        parse_mode: 'HTML',
-        reply_markup: keyboard,
-      });
+      const mediaType = entry.post.media?.type || inferMediaTypeFromPath(mediaPaths[0]);
+      const message = mediaType === 'video'
+        ? await bot.telegram.sendVideo(chatId, { source: mediaPaths[0] }, {
+          caption,
+          parse_mode: 'HTML',
+          reply_markup: keyboard,
+        })
+        : await bot.telegram.sendPhoto(chatId, { source: mediaPaths[0] }, {
+          caption,
+          parse_mode: 'HTML',
+          reply_markup: keyboard,
+        });
       return [{ chatId, messageId: message.message_id }];
     }
   }

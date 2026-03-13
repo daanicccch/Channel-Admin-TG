@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const { config } = require('../config');
 const { queryAll, runSql } = require('../utils/dbHelpers');
 const logger = require('../utils/logger');
+const { inferMediaTypeFromPath } = require('../utils/mediaUtils');
 
 const MAX_MEDIA_PER_POST = parseInt(process.env.TG_MAX_MEDIA_PER_POST || '1', 10);
 const FALLBACK_MEDIA_LOOKBACK_HOURS = parseInt(process.env.TG_FALLBACK_MEDIA_LOOKBACK_HOURS || '24', 10);
@@ -439,6 +440,7 @@ function rowsToCandidates(rows, origin, clusterIndex = -1) {
       candidates.push({
         path: mediaPath,
         paths: validPaths,
+        mediaType: inferMediaTypeFromPath(mediaPath),
         text: row.text || '',
         entities: row.entities || null,
         channel: row.channel || '',
@@ -796,7 +798,7 @@ async function selectMedia(clusters, postText = '', desiredCount = MAX_MEDIA_PER
       `mediaHandler: ranked media selected (${selected.length}) topScore=${selected[0].totalScore} fresh=${selected[0].freshnessScore} ageHours=${selected[0].ageHours?.toFixed?.(1) || 'n/a'} origin=${selected[0].origin}`,
     );
     return {
-      type: 'photo',
+      type: inferMediaTypeFromPath(selected[0].path),
       path: selected[0].path,
       paths: selected.map(item => item.path),
     };
@@ -824,6 +826,7 @@ function selectLeadMediaPost(clusters, postText = '', options = {}) {
   return {
     path: best.path,
     paths: Array.isArray(best.paths) ? best.paths : [best.path].filter(Boolean),
+    mediaType: best.mediaType,
     text: best.text,
     entities: best.entities,
     channel: best.channel,
@@ -891,6 +894,7 @@ function selectAlternativeLeadMediaPost(clusters, excludedSources = [], postText
   return {
     path: best.path,
     paths: Array.isArray(best.paths) ? best.paths : [best.path].filter(Boolean),
+    mediaType: best.mediaType,
     text: best.text,
     entities: best.entities,
     channel: best.channel,

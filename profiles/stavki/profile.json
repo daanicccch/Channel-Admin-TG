@@ -1,7 +1,7 @@
 {
   "id": "bets_stavkii",
   "title": "Bets",
-  "telegram_channel_id": "-1003192927694",
+  "telegram_channel_id": "-1003656941885",
   "rules_path": "POST_RULES.md",
   "templates_path": "TEMPLATES.md",
   "humanizer_path": "HUMANIZER_RULES.md",

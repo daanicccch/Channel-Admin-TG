@@ -14,6 +14,7 @@ const { setupCommands } = require('./commands/botCommands');
 const { getChannelProfile, getChannelProfiles, logChannelProfilesStartup } = require('./channelProfiles');
 const { insertGeneratedPost, summarizeExternalPosts } = require('./utils/postStore');
 const { getCheckedPostIds, getMaxCheckedPostId, markChannelPostChecked } = require('./utils/checkStore');
+const { inferMediaTypeFromPath } = require('./utils/mediaUtils');
 
 function parseArgs() {
   const args = { mode: 'manual', type: 'post' };
@@ -134,6 +135,7 @@ function buildLeadMediaOverride(sourcePost) {
   return {
     path: paths[0],
     paths,
+    mediaType: inferMediaTypeFromPath(paths[0]),
     text: sourcePost.text || '',
     entities: sourcePost.entities || null,
     channel: sourcePost.channel,
