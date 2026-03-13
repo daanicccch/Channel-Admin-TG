@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { config } = require('../config');
 const { queryAll, runSql } = require('../utils/dbHelpers');
 const logger = require('../utils/logger');
@@ -9,6 +10,8 @@ const FALLBACK_MEDIA_LOOKBACK_HOURS = parseInt(process.env.TG_FALLBACK_MEDIA_LOO
 const USED_MEDIA_FILE = path.join(config.paths.data, 'used_media.json');
 const MIN_MEDIA_FILE_SIZE_BYTES = parseInt(process.env.TG_MIN_MEDIA_FILE_SIZE_BYTES || '20000', 10);
 const MAX_RECENT_MEDIA_SCAN = parseInt(process.env.TG_MAX_RECENT_MEDIA_SCAN || '700', 10);
+const RECENT_PUBLISHED_MEDIA_LIMIT = parseInt(process.env.TG_RECENT_PUBLISHED_MEDIA_LIMIT || '300', 10);
+const mediaHashCache = new Map();
 
 function readUsedMediaSet() {
   try {
@@ -124,9 +127,84 @@ function parseUsedInPosts(value) {
   }
 }
 
+function parseTimestampMs(value) {
+  if (!value) return 0;
+  const normalized = /\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/.test(String(value))
+    ? `${value}Z`
+    : String(value);
+  const ms = Date.parse(normalized);
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+function getPublishedMediaPathSet(profileId = null) {
+  const whereParts = [
+    'published_at IS NOT NULL',
+    'media_path IS NOT NULL',
+    "media_path != ''",
+  ];
+  const params = [];
+
+  if (profileId) {
+    whereParts.unshift('profile_id = ?');
+    params.unshift(profileId);
+  }
+
+  const rows = queryAll(
+    `SELECT media_path
+     FROM posts
+     WHERE ${whereParts.join('\n       AND ')}
+     ORDER BY published_at DESC, id DESC
+     LIMIT ${RECENT_PUBLISHED_MEDIA_LIMIT}`,
+    params,
+  );
+
+  return new Set(
+    rows
+      .map((row) => String(row.media_path || '').trim())
+      .filter(Boolean),
+  );
+}
+
+function getFileHash(filePath) {
+  const normalizedPath = String(filePath || '').trim();
+  if (!normalizedPath) return '';
+
+  const cached = mediaHashCache.get(normalizedPath);
+  if (cached) {
+    return cached;
+  }
+
+  try {
+    const buffer = fs.readFileSync(normalizedPath);
+    const hash = crypto.createHash('sha1').update(buffer).digest('hex');
+    mediaHashCache.set(normalizedPath, hash);
+    return hash;
+  } catch (err) {
+    logger.debug(`mediaHandler: failed to hash ${normalizedPath}: ${err.message}`);
+    return '';
+  }
+}
+
+function getPublishedMediaHashSet(profileId = null) {
+  const publishedPaths = getPublishedMediaPathSet(profileId);
+  const hashes = new Set();
+
+  for (const mediaPath of publishedPaths) {
+    const hash = getFileHash(mediaPath);
+    if (hash) {
+      hashes.add(hash);
+    }
+  }
+
+  return hashes;
+}
+
 function scoreCandidate(candidate, context) {
   const normalizedText = normalizeText(candidate.text);
   const normalizedChannel = normalizeText(candidate.channel);
+  const ageHours = candidate.activityAtMs > 0
+    ? Math.max(0, (Date.now() - candidate.activityAtMs) / (1000 * 60 * 60))
+    : Number.POSITIVE_INFINITY;
   const keywordHits = context.keywords.reduce((score, keyword) => {
     if (!keyword) return score;
     return normalizedText.includes(keyword) ? score + 1 : score;
@@ -140,6 +218,14 @@ function scoreCandidate(candidate, context) {
   const viewsScore = Math.min(Math.round((candidate.views || 0) / 500), 20);
   const clusterBoost = candidate.clusterIndex >= 0 ? Math.max(0, 18 - (candidate.clusterIndex * 6)) : 0;
   const originBoost = candidate.origin === 'cluster' ? 25 : (candidate.origin === 'text' ? 8 : 0);
+  const freshnessScore =
+    ageHours <= 3 ? 48 :
+    ageHours <= 6 ? 40 :
+    ageHours <= 12 ? 32 :
+    ageHours <= 24 ? 24 :
+    ageHours <= 48 ? 14 :
+    ageHours <= 72 ? 8 :
+    ageHours <= 120 ? 3 : 0;
 
   const totalScore =
     (isExactSource ? 120 : 0) +
@@ -148,31 +234,46 @@ function scoreCandidate(candidate, context) {
     (keywordHits * 14) +
     clusterBoost +
     originBoost +
+    freshnessScore +
     sizeScore +
     viewsScore;
 
   return {
     ...candidate,
+    ageHours,
     keywordHits,
+    freshnessScore,
     totalScore,
   };
 }
 
-function chooseRankedMedia(scoredCandidates, limit, excluded = []) {
+function chooseRankedMedia(scoredCandidates, limit, excluded = [], options = {}) {
   const desired = Math.max(1, Math.min(limit || MAX_MEDIA_PER_POST, 10));
   const excludeSet = new Set((excluded || []).filter(Boolean));
   const used = readUsedMediaSet();
-  const ranked = scoredCandidates.filter(item => !excludeSet.has(item.path));
+  const publishedSet = options.publishedMediaPathSet || new Set();
+  const publishedHashSet = options.publishedMediaHashSet || new Set();
+  const ranked = scoredCandidates.filter((item) => !excludeSet.has(item.path));
+  const unpublished = ranked.filter((item) =>
+    !publishedSet.has(item.path) &&
+    (!item.fileHash || !publishedHashSet.has(item.fileHash))
+  );
 
-  const fresh = ranked.filter(item => !used.has(item.path)).slice(0, desired);
+  const fresh = unpublished.filter((item) => !used.has(item.path)).slice(0, desired);
   if (fresh.length > 0) {
-    fresh.forEach(item => used.add(item.path));
+    fresh.forEach((item) => used.add(item.path));
     writeUsedMediaSet(used);
     return fresh;
   }
 
-  if (ranked.length > 0) {
-    logger.info('mediaHandler: relevant fresh media exhausted, reusing top-ranked candidates');
+  const unpublishedReuse = unpublished.slice(0, desired);
+  if (unpublishedReuse.length > 0) {
+    logger.info('mediaHandler: fresh unpublished media exhausted, reusing top-ranked unpublished candidates');
+    return unpublishedReuse;
+  }
+
+  if (options.allowPublishedReuse && ranked.length > 0) {
+    logger.info('mediaHandler: unpublished media exhausted, reusing already published candidates');
     return ranked.slice(0, desired);
   }
 
@@ -202,6 +303,9 @@ function rowsToCandidates(rows, origin, clusterIndex = -1) {
         sourceKey: buildSourceKey(row.channel, row.telegram_post_id),
         usedInPosts: parseUsedInPosts(row.used_in_posts),
         fileSize: stat.size,
+        fileHash: getFileHash(mediaPath),
+        activityAt: row.activity_at || null,
+        activityAtMs: parseTimestampMs(row.activity_at),
         origin,
         clusterIndex,
       });
@@ -265,10 +369,11 @@ function getRowsForClusterReferences(cluster = {}, limitPerCluster = 40, profile
   }
 
   return queryAll(
-    `SELECT channel, telegram_post_id, text, entities, media_paths, views, used_in_posts
+    `SELECT channel, telegram_post_id, text, entities, media_paths, views, used_in_posts,
+            COALESCE(source_date, scraped_at) AS activity_at
      FROM source_posts
      WHERE ${whereParts.join('\n       AND ')}
-     ORDER BY views DESC, scraped_at DESC
+     ORDER BY COALESCE(source_date, scraped_at) DESC, views DESC
      LIMIT ${Math.max(limitPerCluster, Math.max(sourceRefs.length, uniqueIds.length) * 4)}`,
     params,
   );
@@ -288,10 +393,11 @@ function getRecentMediaRows(lookbackHours = 24, limit = MAX_RECENT_MEDIA_SCAN, p
   }
 
   return queryAll(
-    `SELECT channel, telegram_post_id, text, entities, media_paths, views, used_in_posts
+    `SELECT channel, telegram_post_id, text, entities, media_paths, views, used_in_posts,
+            COALESCE(source_date, scraped_at) AS activity_at
      FROM source_posts
      WHERE ${whereParts.join('\n       AND ')}
-     ORDER BY views DESC, COALESCE(source_date, scraped_at) DESC
+     ORDER BY COALESCE(source_date, scraped_at) DESC, views DESC
      LIMIT ${limit}`,
     params,
   );
@@ -313,7 +419,12 @@ function getRankedCandidates(clusters, postText = '', options = {}) {
   candidates.push(...rowsToCandidates(recentRows, 'text'));
 
   return dedupeCandidates(candidates.map(candidate => scoreCandidate(candidate, context)))
-    .sort((a, b) => (b.totalScore - a.totalScore) || (b.views - a.views) || (b.fileSize - a.fileSize));
+    .sort((a, b) =>
+      (b.totalScore - a.totalScore) ||
+      (b.activityAtMs - a.activityAtMs) ||
+      (b.views - a.views) ||
+      (b.fileSize - a.fileSize)
+    );
 }
 
 function rankUnusedFirst(candidates, excludedSourceKeys = []) {
@@ -343,10 +454,18 @@ async function selectMedia(clusters, postText = '', desiredCount = MAX_MEDIA_PER
     return { type: 'none', path: null, paths: [] };
   }
   const scored = getRankedCandidates(clusters, postText, options);
+  const publishedMediaPathSet = getPublishedMediaPathSet(options.profileId || null);
+  const publishedMediaHashSet = getPublishedMediaHashSet(options.profileId || null);
 
-  const selected = chooseRankedMedia(scored, count);
+  const selected = chooseRankedMedia(scored, count, [], {
+    publishedMediaPathSet,
+    publishedMediaHashSet,
+    allowPublishedReuse: options.allowPublishedReuse === true,
+  });
   if (selected.length > 0) {
-    logger.info(`mediaHandler: ranked media selected (${selected.length}) topScore=${selected[0].totalScore} origin=${selected[0].origin}`);
+    logger.info(
+      `mediaHandler: ranked media selected (${selected.length}) topScore=${selected[0].totalScore} fresh=${selected[0].freshnessScore} ageHours=${selected[0].ageHours?.toFixed?.(1) || 'n/a'} origin=${selected[0].origin}`,
+    );
     return {
       type: 'photo',
       path: selected[0].path,
@@ -360,7 +479,13 @@ async function selectMedia(clusters, postText = '', desiredCount = MAX_MEDIA_PER
 
 function selectLeadMediaPost(clusters, postText = '', options = {}) {
   const scored = getRankedCandidates(clusters, postText, options);
-  const { unused, available } = rankUnusedFirst(scored, options.excludedSourceKeys || []);
+  const publishedSet = getPublishedMediaPathSet(options.profileId || null);
+  const publishedHashSet = getPublishedMediaHashSet(options.profileId || null);
+  const unpublished = scored.filter((candidate) =>
+    !publishedSet.has(candidate.path) &&
+    (!candidate.fileHash || !publishedHashSet.has(candidate.fileHash))
+  );
+  const { unused, available } = rankUnusedFirst(unpublished, options.excludedSourceKeys || []);
   const best = options.allowUsedSources ? (unused[0] || available[0] || null) : (unused[0] || null);
   if (!best) {
     return null;
@@ -383,8 +508,14 @@ function selectLeadMediaPost(clusters, postText = '', options = {}) {
 
 function selectAlternativeLeadMediaPost(clusters, excludedSources = [], postText = '', options = {}) {
   const scored = getRankedCandidates(clusters, postText, options);
+  const publishedSet = getPublishedMediaPathSet(options.profileId || null);
+  const publishedHashSet = getPublishedMediaHashSet(options.profileId || null);
+  const unpublished = scored.filter((candidate) =>
+    !publishedSet.has(candidate.path) &&
+    (!candidate.fileHash || !publishedHashSet.has(candidate.fileHash))
+  );
   const excludeSet = new Set((excludedSources || []).filter(Boolean));
-  const { unused, available } = rankUnusedFirst(scored, excludedSources);
+  const { unused, available } = rankUnusedFirst(unpublished, excludedSources);
   const availableUnused = unused.filter((candidate) => !excludeSet.has(candidate.sourceKey));
   const availableAll = available.filter((candidate) => !excludeSet.has(candidate.sourceKey));
   const best = pickPreferredAlternative(
@@ -470,14 +601,14 @@ function getMediaForPost(sourcePostIds, limit = 1, options = {}) {
     options.profileId || null,
   );
   return rowsToCandidates(rows, 'cluster')
-    .sort((a, b) => (b.views - a.views) || (b.fileSize - a.fileSize))
+    .sort((a, b) => (b.activityAtMs - a.activityAtMs) || (b.views - a.views) || (b.fileSize - a.fileSize))
     .slice(0, limit)
     .map(item => item.path);
 }
 
 function getRecentMedia(limit = 1, lookbackHours = 24, options = {}) {
   return rowsToCandidates(getRecentMediaRows(lookbackHours, Math.max(limit * 10, 100), options.profileId || null), 'recent')
-    .sort((a, b) => (b.views - a.views) || (b.fileSize - a.fileSize))
+    .sort((a, b) => (b.activityAtMs - a.activityAtMs) || (b.views - a.views) || (b.fileSize - a.fileSize))
     .slice(0, limit)
     .map(item => item.path);
 }
@@ -487,7 +618,7 @@ function getMediaByPostText(postText, limit = 1, lookbackHours = 24, options = {
   const recentRows = getRecentMediaRows(lookbackHours, MAX_RECENT_MEDIA_SCAN, options.profileId || null);
   const scored = dedupeCandidates(rowsToCandidates(recentRows, 'text').map(candidate => scoreCandidate(candidate, context)))
     .filter(item => item.keywordHits > 0)
-    .sort((a, b) => (b.totalScore - a.totalScore) || (b.views - a.views) || (b.fileSize - a.fileSize));
+    .sort((a, b) => (b.totalScore - a.totalScore) || (b.activityAtMs - a.activityAtMs) || (b.views - a.views) || (b.fileSize - a.fileSize));
 
   return scored.slice(0, limit).map(item => item.path);
 }
@@ -495,10 +626,16 @@ function getMediaByPostText(postText, limit = 1, lookbackHours = 24, options = {
 function selectAlternativeMedia(currentPaths = [], limit = MAX_MEDIA_PER_POST, lookbackHours = FALLBACK_MEDIA_LOOKBACK_HOURS, postText = '', options = {}) {
   const context = buildSelectionContext([], postText);
   const recentRows = getRecentMediaRows(lookbackHours, MAX_RECENT_MEDIA_SCAN, options.profileId || null);
+  const publishedMediaPathSet = getPublishedMediaPathSet(options.profileId || null);
+  const publishedMediaHashSet = getPublishedMediaHashSet(options.profileId || null);
   const scored = dedupeCandidates(rowsToCandidates(recentRows, 'recent').map(candidate => scoreCandidate(candidate, context)))
-    .sort((a, b) => (b.totalScore - a.totalScore) || (b.views - a.views) || (b.fileSize - a.fileSize));
+    .sort((a, b) => (b.totalScore - a.totalScore) || (b.activityAtMs - a.activityAtMs) || (b.views - a.views) || (b.fileSize - a.fileSize));
 
-  return chooseRankedMedia(scored, limit, currentPaths).map(item => item.path);
+  return chooseRankedMedia(scored, limit, currentPaths, {
+    publishedMediaPathSet,
+    publishedMediaHashSet,
+    allowPublishedReuse: options.allowPublishedReuse === true,
+  }).map(item => item.path);
 }
 
 function resetUsedMedia() {
