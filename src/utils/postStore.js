@@ -258,13 +258,26 @@ function buildMemoryPrompt(profileId = 'default', postType = 'post', anchorKeywo
 function findSimilarPost(text, profileId = 'default', currentPostType = 'post', options = {}) {
   const recentPosts = Array.isArray(options.recentPosts) && options.recentPosts.length > 0
     ? options.recentPosts
-    : getRecentPosts(profileId, 12);
+    : getRecentPosts(profileId, 12, {
+      publishedOnly: options.publishedOnly === true,
+      withinHours: options.withinHours,
+    });
 
   const currentText = toVisibleText(text);
   const currentTokens = uniqueTokens(currentText, profileId);
   const currentTitleTokens = uniqueTokens(getTitle(currentText), profileId);
   const currentOpening = buildOpening(currentText, 14).toLowerCase();
   const currentEventFingerprint = options.currentEventFingerprint || null;
+  const currentMediaPaths = [...new Set(
+    (Array.isArray(options.currentMediaPaths) ? options.currentMediaPaths : [])
+      .map((item) => String(item || '').trim())
+      .filter(Boolean),
+  )];
+  const currentMediaHashes = new Set(
+    currentMediaPaths
+      .map((mediaPath) => getFileHash(mediaPath))
+      .filter(Boolean),
+  );
 
   let bestMatch = null;
 
@@ -277,21 +290,33 @@ function findSimilarPost(text, profileId = 'default', currentPostType = 'post', 
     const sameOpening = currentOpening && post.opening
       ? currentOpening === String(post.opening).toLowerCase()
       : false;
+    const sameMediaPath = Boolean(post.mediaPath) && currentMediaPaths.includes(String(post.mediaPath).trim());
+    const sameMediaHash = Boolean(post.mediaHash) && currentMediaHashes.has(post.mediaHash);
+    const hasSameMedia = sameMediaPath || sameMediaHash;
     const score = Math.max(
       bodySimilarity,
       titleSimilarity + (sameOpening ? 0.2 : 0),
       eventMatch?.score || 0,
     );
     const threshold = post.type === currentPostType ? 0.5 : 0.72;
+    const mediaBackedDuplicate = hasSameMedia && (
+      score >= 0.34 ||
+      sameOpening ||
+      titleSimilarity >= 0.28 ||
+      Boolean(eventMatch)
+    );
 
-    if (score >= threshold && (!bestMatch || score > bestMatch.score)) {
+    if ((mediaBackedDuplicate || score >= threshold) && (!bestMatch || score > bestMatch.score || (hasSameMedia && !bestMatch.sameMedia))) {
       bestMatch = {
         id: post.id,
         type: post.type,
-        title: post.title || post.opening || '(без заголовка)',
+        title: post.title || post.opening || '(?????? ??????????????????)',
         publishedAt: post.publishedAt,
         score,
         eventType: post.eventFingerprint?.eventType || null,
+        sameMedia: hasSameMedia,
+        sameMediaPath,
+        sameMediaHash,
       };
     }
   }
