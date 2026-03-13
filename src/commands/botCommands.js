@@ -111,7 +111,7 @@ function applyMediaCount(entry, requestedCount) {
   setMediaPaths(entry.post, current.slice(0, 1));
 }
 
-function makePendingEntry(post, type, mediaCount = DEFAULT_MEDIA_COUNT, sourceHistory = [], channelHistory = []) {
+function makePendingEntry(post, type, mediaCount = DEFAULT_MEDIA_COUNT, sourceHistory = [], channelHistory = [], rejectionState = {}) {
   return {
     post,
     type,
@@ -128,6 +128,9 @@ function makePendingEntry(post, type, mediaCount = DEFAULT_MEDIA_COUNT, sourceHi
     profileId: post._profileId || 'default',
     profileTitle: post._profileTitle || 'Default channel',
     targetChannelId: post._targetChannelId || '',
+    rejectedSourcePosts: Array.isArray(rejectionState.rejectedSourcePosts) ? [...rejectionState.rejectedSourcePosts] : [],
+    rejectedMediaPaths: Array.isArray(rejectionState.rejectedMediaPaths) ? [...rejectionState.rejectedMediaPaths] : [],
+    rejectedMediaHashes: Array.isArray(rejectionState.rejectedMediaHashes) ? [...rejectionState.rejectedMediaHashes] : [],
   };
 }
 
@@ -135,6 +138,46 @@ function rememberPreviewSource(entry) {
   mediaHandler.rememberShownSource(entry?.post?._leadMediaCandidate, {
     profileId: entry?.profileId,
   });
+}
+
+function pushUnique(items = [], values = [], normalize = (item) => item, limit = 1000) {
+  const seen = new Set();
+  const merged = [];
+
+  for (const item of [...items, ...values]) {
+    const normalized = normalize(item);
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    merged.push(item);
+  }
+
+  return merged.slice(-limit);
+}
+
+function rememberRejectedPreviewCandidate(entry, candidate) {
+  if (!entry || !candidate) return;
+
+  const identity = mediaHandler.buildCandidateIdentity(candidate);
+  entry.sourceHistory = pushUnique(
+    entry.sourceHistory || [],
+    identity.sourceKey ? [identity.sourceKey] : [],
+    (item) => String(item || '').trim().toLowerCase(),
+  );
+  entry.rejectedSourcePosts = pushUnique(
+    entry.rejectedSourcePosts || [],
+    identity.sourcePost ? [identity.sourcePost] : [],
+    (item) => String(item || '').trim(),
+  );
+  entry.rejectedMediaPaths = pushUnique(
+    entry.rejectedMediaPaths || [],
+    identity.mediaPaths,
+    (item) => String(item || '').trim(),
+  );
+  entry.rejectedMediaHashes = pushUnique(
+    entry.rejectedMediaHashes || [],
+    identity.mediaHashes,
+    (item) => String(item || '').trim().toLowerCase(),
+  );
 }
 
 function formatSourceLine(post) {
@@ -436,6 +479,7 @@ function setupCommands(bot, { generateOnly, generateFromAnalysis, publisher }) {
 
     const analysisData = entry.post?._analysisData;
     if (!analysisData?.clusters) return ctx.answerCbQuery('No source context');
+    rememberRejectedPreviewCandidate(entry, entry.post?._leadMediaCandidate);
     mediaHandler.rememberRejectedSource(entry.post?._leadMediaCandidate, {
       profileId: entry.profileId,
     });
@@ -450,6 +494,9 @@ function setupCommands(bot, { generateOnly, generateFromAnalysis, publisher }) {
         currentMediaPaths: entry.post?._leadMediaCandidate?.paths || [],
         currentChannel: entry.post?._leadMediaCandidate?.channel || '',
         seenChannels: entry.channelHistory || [],
+        excludedSourcePosts: entry.rejectedSourcePosts || [],
+        excludedMediaPaths: entry.rejectedMediaPaths || [],
+        excludedMediaHashes: entry.rejectedMediaHashes || [],
       },
     );
     if (!sourceOverride) return ctx.answerCbQuery('No alternative source posts');
@@ -466,6 +513,12 @@ function setupCommands(bot, { generateOnly, generateFromAnalysis, publisher }) {
         const newPost = await generateFromAnalysis(entry.type, analysisData, {
           leadMediaOverride: sourceOverride,
           profileId: entry.profileId,
+          sourceExclusions: {
+            excludedSourceKeys: entry.sourceHistory || [],
+            excludedSourcePosts: entry.rejectedSourcePosts || [],
+            excludedMediaPaths: entry.rejectedMediaPaths || [],
+            excludedMediaHashes: entry.rejectedMediaHashes || [],
+          },
         });
         const nextEntry = makePendingEntry(
           newPost,
@@ -473,6 +526,11 @@ function setupCommands(bot, { generateOnly, generateFromAnalysis, publisher }) {
           entry.mediaCount ?? DEFAULT_MEDIA_COUNT,
           [...(entry.sourceHistory || []), sourceOverride.sourceKey],
           [...(entry.channelHistory || []), sourceOverride.channel],
+          {
+            rejectedSourcePosts: entry.rejectedSourcePosts || [],
+            rejectedMediaPaths: entry.rejectedMediaPaths || [],
+            rejectedMediaHashes: entry.rejectedMediaHashes || [],
+          },
         );
         applyMediaCount(nextEntry, nextEntry.mediaCount);
         pendingPosts.set(id, nextEntry);
@@ -495,6 +553,7 @@ function setupCommands(bot, { generateOnly, generateFromAnalysis, publisher }) {
     if (!entry) return ctx.answerCbQuery('Post not found');
 
     if (count === 0) {
+      rememberRejectedPreviewCandidate(entry, entry.post?._leadMediaCandidate);
       mediaHandler.rememberRejectedSource(entry.post?._leadMediaCandidate, {
         profileId: entry.profileId,
       });

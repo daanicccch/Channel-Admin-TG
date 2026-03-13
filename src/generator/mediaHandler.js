@@ -49,6 +49,7 @@ function readRejectedSourceRegistry() {
 
 function writeRejectedSourceRegistry(registry) {
   try {
+    fs.mkdirSync(path.dirname(REJECTED_SOURCE_FILE), { recursive: true });
     fs.writeFileSync(REJECTED_SOURCE_FILE, JSON.stringify(registry, null, 2));
   } catch (err) {
     logger.warn(`mediaHandler: failed to write rejected sources file - ${err.message}`);
@@ -81,6 +82,7 @@ function readChannelRotationRegistry() {
 
 function writeChannelRotationRegistry(registry) {
   try {
+    fs.mkdirSync(path.dirname(CHANNEL_ROTATION_FILE), { recursive: true });
     fs.writeFileSync(CHANNEL_ROTATION_FILE, JSON.stringify(registry, null, 2));
   } catch (err) {
     logger.warn(`mediaHandler: failed to write channel rotation file - ${err.message}`);
@@ -184,6 +186,24 @@ function buildSourcePostLabel(channel, telegramPostId) {
   return normalizedChannel && normalizedPostId ? `${normalizedChannel}/${normalizedPostId}` : '';
 }
 
+function buildCandidateIdentity(candidate = null) {
+  const sourceKey = String(candidate?.sourceKey || '').trim().toLowerCase();
+  const sourcePost = buildSourcePostLabel(candidate?.channel, candidate?.telegramPostId);
+  const mediaPaths = (Array.isArray(candidate?.paths) ? candidate.paths : [candidate?.path])
+    .map((item) => String(item || '').trim())
+    .filter(Boolean);
+  const mediaHashes = mediaPaths
+    .map((mediaPath) => getFileHash(mediaPath))
+    .filter(Boolean);
+
+  return {
+    sourceKey,
+    sourcePost,
+    mediaPaths,
+    mediaHashes,
+  };
+}
+
 function parseUsedInPosts(value) {
   if (!value) return [];
   try {
@@ -280,19 +300,20 @@ function rememberRejectedSource(candidate, context = {}) {
   const mediaPaths = new Set(Array.isArray(entry.mediaPaths) ? entry.mediaPaths.filter(Boolean) : []);
   const mediaHashes = new Set(Array.isArray(entry.mediaHashes) ? entry.mediaHashes.filter(Boolean) : []);
 
-  if (candidate.sourceKey) {
-    sourceKeys.add(candidate.sourceKey);
+  const identity = buildCandidateIdentity(candidate);
+
+  if (identity.sourceKey) {
+    sourceKeys.add(identity.sourceKey);
   }
-  const sourcePostLabel = buildSourcePostLabel(candidate.channel, candidate.telegramPostId);
+  const sourcePostLabel = identity.sourcePost;
   if (sourcePostLabel) {
     sourcePosts.add(sourcePostLabel);
   }
-  for (const mediaPath of (Array.isArray(candidate.paths) ? candidate.paths : [candidate.path]).filter(Boolean)) {
+  for (const mediaPath of identity.mediaPaths) {
     mediaPaths.add(mediaPath);
-    const hash = getFileHash(mediaPath);
-    if (hash) {
-      mediaHashes.add(hash);
-    }
+  }
+  for (const hash of identity.mediaHashes) {
+    mediaHashes.add(hash);
   }
 
   registry[profileKey] = {
@@ -561,6 +582,47 @@ function filterRejectedCandidates(candidates = [], profileId = null) {
   );
 }
 
+function filterExcludedCandidates(candidates = [], exclusions = {}) {
+  const excludedSourceKeys = new Set(
+    (Array.isArray(exclusions.excludedSourceKeys) ? exclusions.excludedSourceKeys : [])
+      .map((item) => String(item || '').trim().toLowerCase())
+      .filter(Boolean),
+  );
+  const excludedSourcePosts = new Set(
+    (Array.isArray(exclusions.excludedSourcePosts) ? exclusions.excludedSourcePosts : [])
+      .map((item) => String(item || '').trim())
+      .filter(Boolean),
+  );
+  const excludedMediaPaths = new Set(
+    (Array.isArray(exclusions.excludedMediaPaths) ? exclusions.excludedMediaPaths : [])
+      .map((item) => String(item || '').trim())
+      .filter(Boolean),
+  );
+  const excludedMediaHashes = new Set(
+    (Array.isArray(exclusions.excludedMediaHashes) ? exclusions.excludedMediaHashes : [])
+      .map((item) => String(item || '').trim().toLowerCase())
+      .filter(Boolean),
+  );
+
+  if (
+    excludedSourceKeys.size === 0 &&
+    excludedSourcePosts.size === 0 &&
+    excludedMediaPaths.size === 0 &&
+    excludedMediaHashes.size === 0
+  ) {
+    return candidates;
+  }
+
+  return candidates.filter((candidate) => {
+    const sourcePost = buildSourcePostLabel(candidate.channel, candidate.telegramPostId);
+    if (excludedSourceKeys.has(String(candidate.sourceKey || '').trim().toLowerCase())) return false;
+    if (excludedSourcePosts.has(sourcePost)) return false;
+    if (excludedMediaPaths.has(String(candidate.path || '').trim())) return false;
+    if (candidate.fileHash && excludedMediaHashes.has(String(candidate.fileHash || '').trim().toLowerCase())) return false;
+    return true;
+  });
+}
+
 function applyChannelRotation(candidates = [], profileId = null) {
   const recentChannels = getRecentShownChannels(profileId || 'default');
   const recentIndex = new Map(recentChannels.map((channel, index) => [channel, index]));
@@ -748,10 +810,10 @@ function selectLeadMediaPost(clusters, postText = '', options = {}) {
   const scored = getRankedCandidates(clusters, postText, options);
   const publishedSet = getPublishedMediaPathSet(options.profileId || null);
   const publishedHashSet = getPublishedMediaHashSet(options.profileId || null);
-  const unpublished = scored.filter((candidate) =>
+  const unpublished = filterExcludedCandidates(scored.filter((candidate) =>
     !publishedSet.has(candidate.path) &&
     (!candidate.fileHash || !publishedHashSet.has(candidate.fileHash))
-  );
+  ), options);
   const { unused, available } = rankUnusedFirst(unpublished, options.excludedSourceKeys || []);
   const pool = options.allowUsedSources ? (unused.length > 0 ? unused : available) : unused;
   const best = pool[0] || null;
@@ -792,13 +854,19 @@ function selectAlternativeLeadMediaPost(clusters, excludedSources = [], postText
   const seenChannels = (Array.isArray(options.seenChannels) ? options.seenChannels : [])
     .map((item) => String(item || '').trim().toLowerCase())
     .filter(Boolean);
-  const unpublished = scored.filter((candidate) =>
+  const unpublished = filterExcludedCandidates(scored.filter((candidate) =>
     !publishedSet.has(candidate.path) &&
     (!candidate.fileHash || !publishedHashSet.has(candidate.fileHash)) &&
     (!currentSourceKey || candidate.sourceKey !== currentSourceKey) &&
     !currentMediaPaths.has(candidate.path) &&
     (!candidate.fileHash || !currentMediaHashes.has(candidate.fileHash))
-  );
+  ), {
+    ...options,
+    excludedSourceKeys: [
+      ...(Array.isArray(options.excludedSourceKeys) ? options.excludedSourceKeys : []),
+      ...excludedSources,
+    ],
+  });
   const excludeSet = new Set((excludedSources || []).filter(Boolean));
   const { unused, available } = rankUnusedFirst(unpublished, excludedSources);
   const availableUnused = unused.filter((candidate) => !excludeSet.has(candidate.sourceKey));
@@ -941,6 +1009,7 @@ module.exports = {
   selectAlternativeLeadMediaPost,
   rememberRejectedSource,
   rememberShownSource,
+  buildCandidateIdentity,
   markSourcePostUsed,
   getMediaForPost,
   getRecentMedia,

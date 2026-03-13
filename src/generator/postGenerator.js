@@ -25,11 +25,16 @@ class PostGenerator {
       trends = [],
       leadMediaOverride = null,
       recentTargetPosts = [],
+      sourceExclusions = null,
     } = analysisData || {};
     const enforceCaptionForSourceMedia = ['post', 'alert'].includes(type);
     const profileId = profile?.id || analysisData?.profileId || 'default';
     let leadMediaCandidate = leadMediaOverride || mediaHandler.selectLeadMediaPost(clusters, '', {
       profileId: profileId || null,
+      excludedSourceKeys: sourceExclusions?.excludedSourceKeys || [],
+      excludedSourcePosts: sourceExclusions?.excludedSourcePosts || [],
+      excludedMediaPaths: sourceExclusions?.excludedMediaPaths || [],
+      excludedMediaHashes: sourceExclusions?.excludedMediaHashes || [],
     });
     let sourceContext = this._buildSourceContext(leadMediaCandidate, clusters);
     const recentPosts = postStore.getRecentPosts(profileId, 12);
@@ -112,8 +117,22 @@ class PostGenerator {
           clusters,
           [...triedSourceKeys],
           postText,
-          { profileId },
+          {
+            profileId,
+            excludedSourceKeys: sourceExclusions?.excludedSourceKeys || [],
+            excludedSourcePosts: sourceExclusions?.excludedSourcePosts || [],
+            excludedMediaPaths: sourceExclusions?.excludedMediaPaths || [],
+            excludedMediaHashes: sourceExclusions?.excludedMediaHashes || [],
+            currentSourceKey: leadMediaCandidate?.sourceKey || '',
+            currentMediaPaths: leadMediaCandidate?.paths || [],
+            currentChannel: leadMediaCandidate?.channel || '',
+          },
         );
+
+        if (!alternativeLeadMediaCandidate && leadMediaOverride) {
+          logger.warn('PostGenerator: similarity retry exhausted without a non-rejected alternative source');
+          break;
+        }
 
         if (alternativeLeadMediaCandidate?.sourceKey) {
           triedSourceKeys.add(alternativeLeadMediaCandidate.sourceKey);

@@ -186,6 +186,7 @@ async function generateFromAnalysis(postType = 'post', analysisData = {}, option
     ...analysisData,
     profileId: profile.id,
     leadMediaOverride: options.leadMediaOverride || null,
+    sourceExclusions: options.sourceExclusions || null,
   }, profile);
 
   if (post._leadMediaCandidate) {
