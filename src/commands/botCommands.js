@@ -111,7 +111,7 @@ function applyMediaCount(entry, requestedCount) {
   setMediaPaths(entry.post, current.slice(0, 1));
 }
 
-function makePendingEntry(post, type, mediaCount = DEFAULT_MEDIA_COUNT, sourceHistory = []) {
+function makePendingEntry(post, type, mediaCount = DEFAULT_MEDIA_COUNT, sourceHistory = [], channelHistory = []) {
   return {
     post,
     type,
@@ -120,6 +120,10 @@ function makePendingEntry(post, type, mediaCount = DEFAULT_MEDIA_COUNT, sourceHi
     sourceHistory: [...new Set([
       ...sourceHistory,
       ...(post._leadMediaCandidate?.sourceKey ? [post._leadMediaCandidate.sourceKey] : []),
+    ])],
+    channelHistory: [...new Set([
+      ...channelHistory,
+      ...(post._leadMediaCandidate?.channel ? [String(post._leadMediaCandidate.channel).trim().toLowerCase()] : []),
     ])],
     profileId: post._profileId || 'default',
     profileTitle: post._profileTitle || 'Default channel',
@@ -434,7 +438,10 @@ function setupCommands(bot, { generateOnly, generateFromAnalysis, publisher }) {
       entry.post.text || '',
       {
         profileId: entry.profileId,
+        currentSourceKey: entry.post?._leadMediaCandidate?.sourceKey || '',
+        currentMediaPaths: entry.post?._leadMediaCandidate?.paths || [],
         currentChannel: entry.post?._leadMediaCandidate?.channel || '',
+        seenChannels: entry.channelHistory || [],
       },
     );
     if (!sourceOverride) return ctx.answerCbQuery('No alternative source posts');
@@ -457,6 +464,7 @@ function setupCommands(bot, { generateOnly, generateFromAnalysis, publisher }) {
           entry.type,
           entry.mediaCount ?? DEFAULT_MEDIA_COUNT,
           [...(entry.sourceHistory || []), sourceOverride.sourceKey],
+          [...(entry.channelHistory || []), sourceOverride.channel],
         );
         applyMediaCount(nextEntry, nextEntry.mediaCount);
         pendingPosts.set(id, nextEntry);

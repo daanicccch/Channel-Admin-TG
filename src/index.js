@@ -12,7 +12,7 @@ const { QueueManager } = require('./publisher/queueManager');
 const { Scheduler } = require('./publisher/scheduler');
 const { setupCommands } = require('./commands/botCommands');
 const { getChannelProfile, getChannelProfiles, logChannelProfilesStartup } = require('./channelProfiles');
-const { insertGeneratedPost } = require('./utils/postStore');
+const { insertGeneratedPost, summarizeExternalPosts } = require('./utils/postStore');
 const { getCheckedPostIds, getMaxCheckedPostId, markChannelPostChecked } = require('./utils/checkStore');
 
 function parseArgs() {
@@ -241,6 +241,18 @@ async function generateOnly(postType = 'post', options = {}) {
     webScraper.fetchAll({ enabledSources: profile.webSources }),
   ]);
 
+  let recentTargetPosts = [];
+  try {
+    const targetChannelResult = await scraper.scrapeChannel(profile.telegramChannelId, {
+      limit: 25,
+      lookbackHours: 72,
+    });
+    recentTargetPosts = summarizeExternalPosts(targetChannelResult.posts || [], profile.id);
+    logger.info(`Collected ${recentTargetPosts.length} recent target posts for profile=${profile.id}`);
+  } catch (err) {
+    logger.warn(`Target channel scrape skipped for ${profile.id}: ${err.message}`);
+  }
+
   const posts = (postsByChannel || []).flatMap((channelResult) =>
     (channelResult.posts || []).map((post) => ({
       ...post,
@@ -278,6 +290,7 @@ async function generateOnly(postType = 'post', options = {}) {
     trends,
     sentiment,
     webData,
+    recentTargetPosts,
     profileId: profile.id,
     lookbackHours: collectionOptions.lookbackHours,
   };

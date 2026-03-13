@@ -551,13 +551,20 @@ function rankUnusedFirst(candidates, excludedSourceKeys = []) {
   };
 }
 
-function pickPreferredAlternative(candidates, currentChannel = '') {
+function pickPreferredAlternative(candidates, currentChannel = '', seenChannels = []) {
   const normalizedCurrentChannel = String(currentChannel || '').trim().toLowerCase();
+  const seenSet = new Set((seenChannels || []).map((item) => String(item || '').trim().toLowerCase()).filter(Boolean));
   if (!normalizedCurrentChannel) {
-    return candidates[0] || null;
+    return candidates.find((candidate) => !seenSet.has(String(candidate.channel || '').trim().toLowerCase()))
+      || candidates[0]
+      || null;
   }
 
-  return candidates.find((candidate) => String(candidate.channel || '').trim().toLowerCase() !== normalizedCurrentChannel)
+  return candidates.find((candidate) => {
+    const candidateChannel = String(candidate.channel || '').trim().toLowerCase();
+    return candidateChannel !== normalizedCurrentChannel && !seenSet.has(candidateChannel);
+  })
+    || candidates.find((candidate) => String(candidate.channel || '').trim().toLowerCase() !== normalizedCurrentChannel)
     || candidates[0]
     || null;
 }
@@ -624,9 +631,26 @@ function selectAlternativeLeadMediaPost(clusters, excludedSources = [], postText
   const scored = getRankedCandidates(clusters, postText, options);
   const publishedSet = getPublishedMediaPathSet(options.profileId || null);
   const publishedHashSet = getPublishedMediaHashSet(options.profileId || null);
+  const currentSourceKey = String(options.currentSourceKey || '').trim().toLowerCase();
+  const currentMediaPaths = new Set(
+    (Array.isArray(options.currentMediaPaths) ? options.currentMediaPaths : [])
+      .map((item) => String(item || '').trim())
+      .filter(Boolean),
+  );
+  const currentMediaHashes = new Set(
+    [...currentMediaPaths]
+      .map((mediaPath) => getFileHash(mediaPath))
+      .filter(Boolean),
+  );
+  const seenChannels = (Array.isArray(options.seenChannels) ? options.seenChannels : [])
+    .map((item) => String(item || '').trim().toLowerCase())
+    .filter(Boolean);
   const unpublished = scored.filter((candidate) =>
     !publishedSet.has(candidate.path) &&
-    (!candidate.fileHash || !publishedHashSet.has(candidate.fileHash))
+    (!candidate.fileHash || !publishedHashSet.has(candidate.fileHash)) &&
+    (!currentSourceKey || candidate.sourceKey !== currentSourceKey) &&
+    !currentMediaPaths.has(candidate.path) &&
+    (!candidate.fileHash || !currentMediaHashes.has(candidate.fileHash))
   );
   const excludeSet = new Set((excludedSources || []).filter(Boolean));
   const { unused, available } = rankUnusedFirst(unpublished, excludedSources);
@@ -635,6 +659,7 @@ function selectAlternativeLeadMediaPost(clusters, excludedSources = [], postText
   const best = pickPreferredAlternative(
     availableUnused.length > 0 ? availableUnused : (options.allowUsedSources ? availableAll : []),
     options.currentChannel || '',
+    seenChannels,
   );
 
   if (!best) {

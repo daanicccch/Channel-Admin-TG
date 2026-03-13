@@ -198,6 +198,36 @@ function summarizePost(row, profileId = 'default') {
   };
 }
 
+function summarizeExternalPost(post = {}, profileId = 'default') {
+  const mediaPaths = Array.isArray(post.mediaPaths)
+    ? post.mediaPaths.filter(Boolean)
+    : [post.mediaPath].filter(Boolean);
+  const primaryMediaPath = mediaPaths[0] || null;
+  const plainText = toVisibleText(post.text || '');
+
+  return {
+    id: post.id || null,
+    type: post.type || 'post',
+    publishedAt: post.date instanceof Date
+      ? post.date.toISOString()
+      : (post.publishedAt || null),
+    mediaPath: primaryMediaPath,
+    mediaHash: getFileHash(primaryMediaPath || ''),
+    text: plainText,
+    title: getTitle(post.text || ''),
+    opening: buildOpening(plainText),
+    tokenSet: uniqueTokens(plainText, profileId),
+    eventFingerprint: buildEventFingerprint({
+      text: plainText,
+    }, profileId),
+  };
+}
+
+function summarizeExternalPosts(posts = [], profileId = 'default') {
+  return (Array.isArray(posts) ? posts : [])
+    .map((post) => summarizeExternalPost(post, profileId));
+}
+
 function getRecentPosts(profileId = 'default', limit = 10, options = {}) {
   const safeLimit = Math.max(1, Math.min(Number(limit) || 10, 30));
   const whereParts = ['profile_id = ?'];
@@ -362,5 +392,6 @@ module.exports = {
   getRecentPosts,
   insertGeneratedPost,
   markPostPublished,
+  summarizeExternalPosts,
   toVisibleText,
 };

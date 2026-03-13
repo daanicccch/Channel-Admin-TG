@@ -18,7 +18,14 @@ const SOURCE_STOP_WORDS = new Set([
 
 class PostGenerator {
   async generatePost(type, analysisData, profile = null) {
-    const { clusters = [], webData = {}, sentiment = {}, trends = [], leadMediaOverride = null } = analysisData || {};
+    const {
+      clusters = [],
+      webData = {},
+      sentiment = {},
+      trends = [],
+      leadMediaOverride = null,
+      recentTargetPosts = [],
+    } = analysisData || {};
     const enforceCaptionForSourceMedia = ['post', 'alert'].includes(type);
     const profileId = profile?.id || analysisData?.profileId || 'default';
     let leadMediaCandidate = leadMediaOverride || mediaHandler.selectLeadMediaPost(clusters, '', {
@@ -26,6 +33,7 @@ class PostGenerator {
     });
     let sourceContext = this._buildSourceContext(leadMediaCandidate, clusters);
     const recentPosts = postStore.getRecentPosts(profileId, 12);
+    const targetRecentPosts = Array.isArray(recentTargetPosts) ? recentTargetPosts : [];
     const triedSourceKeys = new Set([leadMediaCandidate?.sourceKey].filter(Boolean));
 
     const rulesContent = styleEngine.loadRules(profile);
@@ -95,7 +103,7 @@ class PostGenerator {
         postText,
         profileId,
         type,
-        recentPosts,
+        [...recentPosts, ...targetRecentPosts],
         sourceContext,
       );
 
