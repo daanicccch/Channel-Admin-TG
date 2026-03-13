@@ -8,6 +8,7 @@ const logger = require('../utils/logger');
 const MAX_MEDIA_PER_POST = parseInt(process.env.TG_MAX_MEDIA_PER_POST || '1', 10);
 const FALLBACK_MEDIA_LOOKBACK_HOURS = parseInt(process.env.TG_FALLBACK_MEDIA_LOOKBACK_HOURS || '24', 10);
 const USED_MEDIA_FILE = path.join(config.paths.data, 'used_media.json');
+const REJECTED_SOURCE_FILE = path.join(config.paths.data, 'rejected_sources.json');
 const MIN_MEDIA_FILE_SIZE_BYTES = parseInt(process.env.TG_MIN_MEDIA_FILE_SIZE_BYTES || '20000', 10);
 const MAX_RECENT_MEDIA_SCAN = parseInt(process.env.TG_MAX_RECENT_MEDIA_SCAN || '700', 10);
 const RECENT_PUBLISHED_MEDIA_LIMIT = parseInt(process.env.TG_RECENT_PUBLISHED_MEDIA_LIMIT || '300', 10);
@@ -31,6 +32,37 @@ function writeUsedMediaSet(set) {
   } catch (err) {
     logger.warn(`mediaHandler: failed to write used media file - ${err.message}`);
   }
+}
+
+function readRejectedSourceRegistry() {
+  try {
+    if (!fs.existsSync(REJECTED_SOURCE_FILE)) return {};
+    const raw = fs.readFileSync(REJECTED_SOURCE_FILE, 'utf8');
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch (err) {
+    logger.warn(`mediaHandler: failed to read rejected sources file - ${err.message}`);
+    return {};
+  }
+}
+
+function writeRejectedSourceRegistry(registry) {
+  try {
+    fs.writeFileSync(REJECTED_SOURCE_FILE, JSON.stringify(registry, null, 2));
+  } catch (err) {
+    logger.warn(`mediaHandler: failed to write rejected sources file - ${err.message}`);
+  }
+}
+
+function getRejectedSourceMemory(profileId = 'default') {
+  const registry = readRejectedSourceRegistry();
+  const profileKey = String(profileId || 'default');
+  const entry = registry[profileKey] || {};
+  return {
+    sourceKeys: new Set(Array.isArray(entry.sourceKeys) ? entry.sourceKeys.filter(Boolean) : []),
+    mediaPaths: new Set(Array.isArray(entry.mediaPaths) ? entry.mediaPaths.filter(Boolean) : []),
+    mediaHashes: new Set(Array.isArray(entry.mediaHashes) ? entry.mediaHashes.filter(Boolean) : []),
+  };
 }
 
 function buildSelectionContext(clusters = [], postText = '') {
@@ -199,6 +231,39 @@ function getPublishedMediaHashSet(profileId = null) {
   return hashes;
 }
 
+function rememberRejectedSource(candidate, context = {}) {
+  if (!candidate) return false;
+
+  const profileKey = String(context.profileId || 'default');
+  const registry = readRejectedSourceRegistry();
+  const entry = registry[profileKey] && typeof registry[profileKey] === 'object'
+    ? registry[profileKey]
+    : { sourceKeys: [], mediaPaths: [], mediaHashes: [] };
+
+  const sourceKeys = new Set(Array.isArray(entry.sourceKeys) ? entry.sourceKeys.filter(Boolean) : []);
+  const mediaPaths = new Set(Array.isArray(entry.mediaPaths) ? entry.mediaPaths.filter(Boolean) : []);
+  const mediaHashes = new Set(Array.isArray(entry.mediaHashes) ? entry.mediaHashes.filter(Boolean) : []);
+
+  if (candidate.sourceKey) {
+    sourceKeys.add(candidate.sourceKey);
+  }
+  for (const mediaPath of (Array.isArray(candidate.paths) ? candidate.paths : [candidate.path]).filter(Boolean)) {
+    mediaPaths.add(mediaPath);
+    const hash = getFileHash(mediaPath);
+    if (hash) {
+      mediaHashes.add(hash);
+    }
+  }
+
+  registry[profileKey] = {
+    sourceKeys: [...sourceKeys].slice(-1000),
+    mediaPaths: [...mediaPaths].slice(-1000),
+    mediaHashes: [...mediaHashes].slice(-1000),
+  };
+  writeRejectedSourceRegistry(registry);
+  return true;
+}
+
 function scoreCandidate(candidate, context) {
   const normalizedText = normalizeText(candidate.text);
   const normalizedChannel = normalizeText(candidate.channel);
@@ -327,6 +392,52 @@ function dedupeCandidates(candidates) {
   return Array.from(unique.values());
 }
 
+function shuffleArray(items = []) {
+  const copy = [...items];
+  for (let index = copy.length - 1; index > 0; index--) {
+    const swapIndex = Math.floor(Math.random() * (index + 1));
+    [copy[index], copy[swapIndex]] = [copy[swapIndex], copy[index]];
+  }
+  return copy;
+}
+
+function diversifyCandidatesByChannel(candidates = []) {
+  const buckets = new Map();
+
+  for (const candidate of candidates) {
+    const channelKey = String(candidate.channel || '').trim().toLowerCase() || 'unknown';
+    if (!buckets.has(channelKey)) {
+      buckets.set(channelKey, []);
+    }
+    buckets.get(channelKey).push(candidate);
+  }
+
+  const channelOrder = shuffleArray([...buckets.keys()]);
+  const diversified = [];
+  let added = true;
+
+  while (added) {
+    added = false;
+    for (const channelKey of channelOrder) {
+      const bucket = buckets.get(channelKey) || [];
+      if (bucket.length === 0) continue;
+      diversified.push(bucket.shift());
+      added = true;
+    }
+  }
+
+  return diversified;
+}
+
+function filterRejectedCandidates(candidates = [], profileId = null) {
+  const rejected = getRejectedSourceMemory(profileId || 'default');
+  return candidates.filter((candidate) =>
+    !rejected.sourceKeys.has(candidate.sourceKey) &&
+    !rejected.mediaPaths.has(candidate.path) &&
+    (!candidate.fileHash || !rejected.mediaHashes.has(candidate.fileHash))
+  );
+}
+
 function parseSourceKey(sourceKey) {
   const normalized = String(sourceKey || '').trim().toLowerCase();
   if (!normalized.includes(':')) return null;
@@ -418,13 +529,16 @@ function getRankedCandidates(clusters, postText = '', options = {}) {
   const recentRows = getRecentMediaRows(FALLBACK_MEDIA_LOOKBACK_HOURS, MAX_RECENT_MEDIA_SCAN, profileId);
   candidates.push(...rowsToCandidates(recentRows, 'text'));
 
-  return dedupeCandidates(candidates.map(candidate => scoreCandidate(candidate, context)))
+  const ranked = dedupeCandidates(candidates.map(candidate => scoreCandidate(candidate, context)))
     .sort((a, b) =>
       (b.totalScore - a.totalScore) ||
       (b.activityAtMs - a.activityAtMs) ||
       (b.views - a.views) ||
       (b.fileSize - a.fileSize)
     );
+
+  const filtered = filterRejectedCandidates(ranked, profileId);
+  return diversifyCandidatesByChannel(filtered);
 }
 
 function rankUnusedFirst(candidates, excludedSourceKeys = []) {
@@ -646,6 +760,7 @@ module.exports = {
   selectMedia,
   selectLeadMediaPost,
   selectAlternativeLeadMediaPost,
+  rememberRejectedSource,
   markSourcePostUsed,
   getMediaForPost,
   getRecentMedia,

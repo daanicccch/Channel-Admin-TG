@@ -424,6 +424,9 @@ function setupCommands(bot, { generateOnly, generateFromAnalysis, publisher }) {
 
     const analysisData = entry.post?._analysisData;
     if (!analysisData?.clusters) return ctx.answerCbQuery('No source context');
+    mediaHandler.rememberRejectedSource(entry.post?._leadMediaCandidate, {
+      profileId: entry.profileId,
+    });
 
     const sourceOverride = mediaHandler.selectAlternativeLeadMediaPost(
       analysisData.clusters,
@@ -473,6 +476,12 @@ function setupCommands(bot, { generateOnly, generateFromAnalysis, publisher }) {
     const count = parseInt(ctx.match[2], 10);
     const entry = pendingPosts.get(id);
     if (!entry) return ctx.answerCbQuery('Post not found');
+
+    if (count === 0) {
+      mediaHandler.rememberRejectedSource(entry.post?._leadMediaCandidate, {
+        profileId: entry.profileId,
+      });
+    }
 
     applyMediaCount(entry, count);
     await ctx.answerCbQuery(`Images: ${entry.mediaCount}`);

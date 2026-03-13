@@ -476,13 +476,15 @@ ${memoryPrompt}
   _appendSimilarityIssue(validationResult, postText, profileId, type, recentPosts = [], sourceContext = null) {
     const issues = Array.isArray(validationResult?.issues) ? [...validationResult.issues] : [];
     const similarPost = postStore.findSimilarPost(postText, profileId, type, {
-      recentPosts,
+      publishedOnly: true,
+      withinHours: 72,
       currentEventFingerprint: sourceContext?.eventFingerprint || null,
+      currentMediaPaths: sourceContext?.leadMediaCandidate?.paths || [],
     });
 
     if (similarPost) {
       issues.push(
-        `Текст слишком похож на недавний пост [${similarPost.type}] "${similarPost.title}" (similarity=${similarPost.score.toFixed(2)}${similarPost.eventType ? `, event=${similarPost.eventType}` : ''}). Нужен другой угол, заголовок и первая подводка.`,
+        `Text is too close to a recently published post [${similarPost.type}] "${similarPost.title}" (similarity=${similarPost.score.toFixed(2)}${similarPost.sameMedia ? ', same_media=true' : ''}${similarPost.eventType ? `, event=${similarPost.eventType}` : ''}). Need a different angle/source and different media for the last 3 days.`
       );
     }
 
