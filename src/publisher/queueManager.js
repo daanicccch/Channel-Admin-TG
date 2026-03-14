@@ -32,6 +32,8 @@ class QueueManager {
       status: 'pending',
       createdAt: new Date(),
       reviewRefs: [],
+      sentForReview: false,
+      reviewSentAt: null,
       sourceHistory: post._leadMediaCandidate?.sourceKey ? [post._leadMediaCandidate.sourceKey] : [],
       profileId: post._profileId || 'default',
       profileTitle: post._profileTitle || 'Default channel',
@@ -83,9 +85,16 @@ class QueueManager {
           item.status = 'published';
           logger.info(`Post ${item.id} published automatically to ${item.targetChannelId}`);
         } else if (config.modes.reviewMode) {
+          if (item.sentForReview) {
+            logger.debug(`Post ${item.id} already sent for review, skipping duplicate preview`);
+            continue;
+          }
+
           item.reviewRefs = await this.publisher.sendToAdmin(item.post, item.id, {
-            header: `📝 Post for review • ${item.profileTitle}`,
+            header: `Post for review - ${item.profileTitle}`,
           });
+          item.sentForReview = true;
+          item.reviewSentAt = new Date();
           item.status = 'pending';
           logger.info(`Post ${item.id} sent for review`);
         } else {
@@ -210,8 +219,10 @@ class QueueManager {
           ? [...new Set([...(item.sourceHistory || []), sourceOverride.sourceKey, newPost._leadMediaCandidate.sourceKey])]
           : [...new Set([...(item.sourceHistory || []), sourceOverride.sourceKey])];
         item.reviewRefs = await this.publisher.sendToAdmin(item.post, item.id, {
-          header: `🖼 Updated preview • ${item.profileTitle}`,
+          header: `Updated preview - ${item.profileTitle}`,
         });
+        item.sentForReview = true;
+        item.reviewSentAt = new Date();
         logger.info(`Post ${postId}: source replaced with ${sourceOverride.channel}/${sourceOverride.telegramPostId}`);
       } catch (err) {
         logger.error(`Replace source error for queued post ${postId}: ${err.message}`);
