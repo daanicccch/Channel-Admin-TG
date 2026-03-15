@@ -344,14 +344,14 @@ async function runImmediateChecks(options = {}) {
         .filter((channel) => channel && typeof channel === 'object' && channel.is_check === true);
 
       for (const channelEntry of watchedChannels) {
-        const username = String(channelEntry.username || '').trim();
-        if (!username) {
+        const channelRef = scraper.normalizeChannelEntry(channelEntry);
+        if (!channelRef) {
           continue;
         }
 
         try {
-          logger.info(`Immediate check: ${profile.id}/${username}`);
-          const result = await scraper.scrapeChannel(username, {
+          logger.info(`Immediate check: ${profile.id}/${channelRef.label}`);
+          const result = await scraper.scrapeChannel(channelRef, {
             limit: 10,
             lookbackHours: 48,
           });
@@ -362,7 +362,8 @@ async function runImmediateChecks(options = {}) {
             continue;
           }
 
-          const maxCheckedPostId = getMaxCheckedPostId(profile.id, username);
+          const channelKey = result.channel;
+          const maxCheckedPostId = getMaxCheckedPostId(profile.id, channelKey);
           const sortedAsc = posts
             .filter((post) => Number(post.id))
             .sort((left, right) => Number(left.id) - Number(right.id));
@@ -371,12 +372,12 @@ async function runImmediateChecks(options = {}) {
             const latestPost = sortedAsc[sortedAsc.length - 1];
             markChannelPostChecked({
               profileId: profile.id,
-              channel: username,
+              channel: channelKey,
               telegramPostId: latestPost.id,
               sourceDate: latestPost.date instanceof Date ? latestPost.date.toISOString() : null,
               status: 'seeded',
             });
-            logger.info(`Immediate check: seeded baseline for ${profile.id}/${username} at post ${latestPost.id}`);
+            logger.info(`Immediate check: seeded baseline for ${profile.id}/${channelKey} at post ${latestPost.id}`);
             continue;
           }
 
@@ -385,11 +386,11 @@ async function runImmediateChecks(options = {}) {
             continue;
           }
 
-          const alreadyCheckedIds = getCheckedPostIds(profile.id, username, candidatePosts.map((post) => post.id));
+          const alreadyCheckedIds = getCheckedPostIds(profile.id, channelKey, candidatePosts.map((post) => post.id));
           const uncheckedPosts = candidatePosts.filter((post) => !alreadyCheckedIds.has(Number(post.id)));
 
           for (const sourcePost of uncheckedPosts) {
-            logger.info(`Immediate check: new post detected ${profile.id}/${username}/${sourcePost.id}`);
+            logger.info(`Immediate check: new post detected ${profile.id}/${channelKey}/${sourcePost.id}`);
             const analysisData = buildImmediateAnalysisData(profile, sourcePost, channelEntry);
             const leadMediaOverride = buildLeadMediaOverride(sourcePost);
             const post = await generateFromAnalysis('alert', analysisData, {
@@ -406,7 +407,7 @@ async function runImmediateChecks(options = {}) {
 
             markChannelPostChecked({
               profileId: profile.id,
-              channel: username,
+              channel: channelKey,
               telegramPostId: sourcePost.id,
               sourceDate: sourcePost.date instanceof Date ? sourcePost.date.toISOString() : null,
               generatedPostId: post._dbPostId || null,
@@ -414,7 +415,7 @@ async function runImmediateChecks(options = {}) {
             });
           }
         } catch (err) {
-          logger.error(`Immediate check failed for ${profile.id}/${username}: ${err.message}`);
+          logger.error(`Immediate check failed for ${profile.id}/${channelRef.label}: ${err.message}`);
         }
       }
     }

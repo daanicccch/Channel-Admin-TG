@@ -1,4 +1,4 @@
-﻿const { TelegramClient } = require('telegram');
+const { TelegramClient, Api } = require('telegram');
 const { StringSession } = require('telegram/sessions');
 const updates = require('telegram/client/updates');
 const { config } = require('../config');
@@ -19,6 +19,47 @@ const MESSAGES_TIMEOUT_MS = parseInt(process.env.TG_MESSAGES_TIMEOUT_MS || '3000
 const MEDIA_TIMEOUT_MS = parseInt(process.env.TG_MEDIA_TIMEOUT_MS || '12000', 10);
 const VIDEO_MEDIA_TIMEOUT_MS = parseInt(process.env.TG_VIDEO_TIMEOUT_MS || '90000', 10);
 const MAX_MEDIA_PER_CHANNEL = parseInt(process.env.TG_MAX_MEDIA_PER_CHANNEL || '8', 10);
+
+function stripTelegramDecorators(value) {
+  return String(value || '').trim().replace(/^@/, '');
+}
+
+function extractInviteHash(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+
+  const directMatch = raw.match(/^\+([A-Za-z0-9_-]+)$/);
+  if (directMatch) return directMatch[1];
+
+  const normalized = raw
+    .replace(/^https?:\/\//i, '')
+    .replace(/^www\./i, '')
+    .replace(/^telegram\.me\//i, 't.me/');
+  const inviteMatch = normalized.match(/^t\.me\/\+([A-Za-z0-9_-]+)$/i)
+    || normalized.match(/^t\.me\/joinchat\/([A-Za-z0-9_-]+)$/i);
+
+  return inviteMatch ? inviteMatch[1] : '';
+}
+
+function extractUsernameFromUrl(value) {
+  const normalized = String(value || '').trim()
+    .replace(/^https?:\/\//i, '')
+    .replace(/^www\./i, '')
+    .replace(/^telegram\.me\//i, 't.me/');
+  const match = normalized.match(/^t\.me\/([A-Za-z0-9_]{5,})$/i);
+  if (!match) return '';
+  if (match[1].startsWith('+')) return '';
+  if (match[1].toLowerCase() === 'joinchat') return '';
+  return match[1];
+}
+
+function sanitizeChannelKey(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '_')
+    .replace(/^_+|_+$/g, '') || 'unknown';
+}
 
 function normalizeTelegramDate(value) {
   if (value instanceof Date) return value;
@@ -95,34 +136,120 @@ class TelegramScraper {
     logger.info('TelegramScraper: подключен к Telegram');
   }
 
+  normalizeChannelEntry(channelEntry) {
+    if (typeof channelEntry === 'string') {
+      const trimmed = channelEntry.trim();
+      const inviteHash = extractInviteHash(trimmed);
+      if (inviteHash) {
+        return {
+          input: trimmed,
+          key: `invite_${sanitizeChannelKey(inviteHash)}`,
+          label: trimmed,
+          type: 'invite',
+        };
+      }
+
+      const username = stripTelegramDecorators(extractUsernameFromUrl(trimmed) || trimmed);
+      return username
+        ? {
+            input: username,
+            key: sanitizeChannelKey(username),
+            label: username,
+            type: 'username',
+          }
+        : null;
+    }
+
+    if (!channelEntry || typeof channelEntry !== 'object') {
+      return null;
+    }
+
+    const inviteLink = String(channelEntry.invite_link || '').trim();
+    const usernameRaw = String(channelEntry.username || '').trim();
+    const inviteHash = extractInviteHash(inviteLink || usernameRaw);
+
+    if (inviteHash) {
+      const username = stripTelegramDecorators(extractUsernameFromUrl(usernameRaw) || usernameRaw);
+      return {
+        input: inviteLink || usernameRaw,
+        key: username && !extractInviteHash(username) ? sanitizeChannelKey(username) : `invite_${sanitizeChannelKey(inviteHash)}`,
+        label: username && !extractInviteHash(username) ? username : (inviteLink || usernameRaw),
+        type: 'invite',
+      };
+    }
+
+    const username = stripTelegramDecorators(extractUsernameFromUrl(usernameRaw) || usernameRaw);
+    if (!username) {
+      return null;
+    }
+
+    return {
+      input: username,
+      key: sanitizeChannelKey(username),
+      label: username,
+      type: 'username',
+    };
+  }
+
+  async _resolveChannelEntity(channelRef) {
+    if (!channelRef?.input) {
+      throw new Error('Channel reference is empty or invalid');
+    }
+
+    const inviteHash = extractInviteHash(channelRef.input);
+    if (inviteHash) {
+      const invite = await withTimeout(
+        this.client.invoke(new Api.messages.CheckChatInvite({ hash: inviteHash })),
+        ENTITY_TIMEOUT_MS,
+        `checkChatInvite:${channelRef.key}`
+      );
+
+      if (invite?.className === 'ChatInviteAlready' && invite.chat) {
+        return invite.chat;
+      }
+
+      throw new Error(`Invite link is not readable for this session: ${channelRef.input}`);
+    }
+
+    return withTimeout(
+      this.client.getEntity(channelRef.input),
+      ENTITY_TIMEOUT_MS,
+      `getEntity:${channelRef.input}`
+    );
+  }
+
   /**
    * Scrape messages from a single channel.
-   * @param {string} username - channel username (without @)
+   * @param {string|object} channelInput - channel username or invite_link reference
    * @param {object} options
    * @param {number} options.limit - max messages to fetch (default 50)
    * @returns {object} - { channel, channelTitle, posts: [...] }
    */
-  async scrapeChannel(username, options = {}) {
+  async scrapeChannel(channelInput, options = {}) {
+    const channelRef = typeof channelInput === 'object' && channelInput?.input
+      ? channelInput
+      : this.normalizeChannelEntry(channelInput);
+    if (!channelRef) {
+      throw new Error('Channel reference is empty or invalid');
+    }
+
     const limit = options.limit || 50;
     const lookbackHours = options.lookbackHours || config.limits.lookbackHours || 24;
     const cutoffMs = Date.now() - (lookbackHours * 60 * 60 * 1000);
-    const entity = await withTimeout(
-      this.client.getEntity(username),
-      ENTITY_TIMEOUT_MS,
-      `getEntity:${username}`
-    );
-    const channelTitle = entity.title || username;
+    const entity = await this._resolveChannelEntity(channelRef);
+    const channelKey = channelRef.key || sanitizeChannelKey(entity?.username || channelRef.label);
+    const channelTitle = entity.title || channelRef.label || channelKey;
 
     const messages = await withTimeout(
       this.client.getMessages(entity, { limit }),
       MESSAGES_TIMEOUT_MS,
-      `getMessages:${username}`
+      `getMessages:${channelKey}`
     );
 
-    const posts = await this._buildPostsFromMessages(messages, username, channelTitle, cutoffMs);
+    const posts = await this._buildPostsFromMessages(messages, channelKey, channelTitle, cutoffMs);
 
-    logger.info(`TelegramScraper: ${username} - получено ${posts.length} постов`);
-    return { channel: username, channelTitle, posts };
+    logger.info(`TelegramScraper: ${channelRef.label || channelKey} - получено ${posts.length} постов`);
+    return { channel: channelKey, channelTitle, posts };
   }
 
   async _buildPostsFromMessages(messages, username, channelTitle, cutoffMs) {
@@ -170,7 +297,7 @@ class TelegramScraper {
       post.forwards = Math.max(Number(post.forwards) || 0, Number(msg.forwards) || 0);
 
       if (msg.reactions && msg.reactions.results) {
-        post.reactions = msg.reactions.results.map(r => ({
+        post.reactions = msg.reactions.results.map((r) => ({
           emoji: r.reaction.emoticon || r.reaction.documentId || '?',
           count: r.count,
         }));
@@ -291,19 +418,19 @@ class TelegramScraper {
     const allResults = [];
 
     for (const channelEntry of channels) {
-      const username = typeof channelEntry === 'string' ? channelEntry : channelEntry.username;
-      if (!username) {
-        logger.warn('TelegramScraper: пропущен канал без username');
+      const channelRef = this.normalizeChannelEntry(channelEntry);
+      if (!channelRef) {
+        logger.warn('TelegramScraper: пропущен канал без username/invite_link');
         continue;
       }
 
       try {
-        logger.info(`TelegramScraper: start ${username}`);
+        logger.info(`TelegramScraper: start ${channelRef.label}`);
         await rateLimiter.waitForSlot('telegram_scrape');
         const limit = limitOverride || ((typeof channelEntry === 'object' && channelEntry.max_posts) || 50);
         const startedAt = Date.now();
 
-        const result = await this.scrapeChannel(username, {
+        const result = await this.scrapeChannel(channelRef, {
           limit,
           lookbackHours,
         });
@@ -311,9 +438,9 @@ class TelegramScraper {
         this.persistChannelPosts(result, { profileId });
 
         const durationSec = ((Date.now() - startedAt) / 1000).toFixed(1);
-        logger.info(`TelegramScraper: ${username} - сохранено в БД (${durationSec}s)`);
+        logger.info(`TelegramScraper: ${channelRef.label} - сохранено в БД (${durationSec}s)`);
       } catch (err) {
-        logger.error(`TelegramScraper: ошибка при скрапинге ${username}: ${err.message}`);
+        logger.error(`TelegramScraper: ошибка при скрапинге ${channelRef.label}: ${err.message}`);
       }
     }
 
