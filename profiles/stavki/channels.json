@@ -1,23 +1,14 @@
 {
   "channels": [
     {
-      "username": "tennisprime0",
-      "name": "Tennis Prime",
+      "invite_link": "https://t.me/+tLtWnKTg6Fw1Mzky",
+      "name": "кабинет сценариста (dota+cs)",
       "priority": "high",
       "language": "ru",
       "category": "analytics",
       "scrape_interval_minutes": 20,
       "is_check": false
-    },
-    {
-      "username": "realbestov1",
-      "name": "Real Bestov",
-      "priority": "high",
-      "language": "ru",
-      "category": "memecoins",
-      "scrape_interval_minutes": 15,
-      "is_check": false
-    }
+    }    
   ],
   "settings": {
     "max_posts_per_channel": 50,
