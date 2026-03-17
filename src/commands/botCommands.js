@@ -69,6 +69,33 @@ function profileSelectionKeyboard(postType = 'post', mediaCount = DEFAULT_MEDIA_
   };
 }
 
+function importProfileSelectionKeyboard(postType = 'post', mediaCount = DEFAULT_MEDIA_COUNT) {
+  const profiles = getChannelProfiles();
+  return {
+    inline_keyboard: [
+      ...profiles.map((profile) => ([
+        {
+          text: `${profile.title} (${profile.id})`,
+          callback_data: `cmd_pick_import_profile|${profile.id}|${postType}|${mediaCount}`,
+        },
+      ])),
+      [
+        { text: 'Cancel', callback_data: 'cmd_cancel_import' },
+      ],
+    ],
+  };
+}
+
+function importAwaitKeyboard() {
+  return {
+    inline_keyboard: [
+      [
+        { text: 'Cancel', callback_data: 'cmd_cancel_import' },
+      ],
+    ],
+  };
+}
+
 function previewKeyboard(id, postType, mediaCount = DEFAULT_MEDIA_COUNT) {
   const countLabel = `Media: ${mediaCount}`;
   const mediaCountButtons = [];
@@ -617,6 +644,22 @@ async function startGenerationFromImportedPost(bot, chatId, profile, postType, i
   });
 }
 
+async function startImportSession(ctx, profile, postType, mediaCount) {
+  pendingImportedPosts.set(getImportSessionKey(ctx), {
+    profileId: profile.id,
+    postType,
+    mediaCount,
+  });
+
+  await ctx.reply(
+    `Send or forward the source message for <b>${profile.title}</b> (<code>${profile.id}</code>).\nYou can send plain text, a photo with caption, or a video with caption.`,
+    {
+      parse_mode: 'HTML',
+      reply_markup: importAwaitKeyboard(),
+    },
+  );
+}
+
 function setupCommands(bot, { generateOnly, generateFromAnalysis, publisher }) {
   bot.command('channels', adminOnly, async (ctx) => {
     const profiles = getChannelProfiles();
@@ -677,9 +720,17 @@ function setupCommands(bot, { generateOnly, generateFromAnalysis, publisher }) {
   bot.command('post_from', adminOnly, async (ctx) => {
     const parts = ctx.message.text.split(/\s+/).filter(Boolean);
     const parsed = parseImportCommandArgs(parts);
+    const profiles = getChannelProfiles();
 
     if (parsed.profile === undefined) {
       return ctx.reply('Unknown profile.\n\nUse /channels to list profiles.\nUsage: /post_from profile_id');
+    }
+
+    if (!parsed.profile && profiles.length > 1) {
+      return ctx.reply('Choose a channel profile for import.', {
+        parse_mode: 'HTML',
+        reply_markup: importProfileSelectionKeyboard(parsed.postType || 'post', parsed.mediaCount || DEFAULT_MEDIA_COUNT),
+      });
     }
 
     if (!parsed.profile) {
@@ -707,16 +758,8 @@ function setupCommands(bot, { generateOnly, generateFromAnalysis, publisher }) {
       );
     }
 
-    pendingImportedPosts.set(getImportSessionKey(ctx), {
-      profileId: parsed.profile.id,
-      postType: parsed.postType,
-      mediaCount: initialMediaCount,
-    });
-
-    return ctx.reply(
-      `Send or forward the source message for <b>${parsed.profile.title}</b> (<code>${parsed.profile.id}</code>).\nYou can send plain text, a photo with caption, or a video with caption.`,
-      { parse_mode: 'HTML' },
-    );
+    await startImportSession(ctx, parsed.profile, parsed.postType, initialMediaCount);
+    return undefined;
   });
 
   bot.command('status', adminOnly, async (ctx) => {
@@ -758,6 +801,20 @@ function setupCommands(bot, { generateOnly, generateFromAnalysis, publisher }) {
 
     await ctx.answerCbQuery(`Selected ${profile.title}`);
     await startGeneration(bot, ctx.chat.id, profile, postType, mediaCount, generateOnly);
+  });
+
+  bot.action(/^cmd_pick_import_profile\|([^|]+)\|(\w+)\|(\d+)$/, async (ctx) => {
+    if (!(await ensureAdminCallbackAccess(ctx))) return;
+
+    const profile = getChannelProfile(ctx.match[1]);
+    const postType = ctx.match[2];
+    const mediaCount = parseInt(ctx.match[3], 10);
+
+    if (!profile) return ctx.answerCbQuery('Unknown profile');
+    if (!VALID_TYPES.includes(postType)) return ctx.answerCbQuery('Unknown type');
+
+    await ctx.answerCbQuery(`Selected ${profile.title}`);
+    await startImportSession(ctx, profile, postType, mediaCount);
   });
 
   bot.action(/^cmd_approve_(\d+)$/, async (ctx) => {
@@ -931,6 +988,20 @@ function setupCommands(bot, { generateOnly, generateFromAnalysis, publisher }) {
     pendingPosts.delete(id);
     await ctx.answerCbQuery('Cancelled');
     logger.info(`Post ${id} cancelled via command`);
+  });
+
+  bot.action('cmd_cancel_import', async (ctx) => {
+    if (!(await ensureAdminCallbackAccess(ctx))) return;
+
+    pendingImportedPosts.delete(getImportSessionKey(ctx));
+
+    try {
+      await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
+    } catch (err) {
+      logger.debug(`Import cancel keyboard cleanup skipped: ${err.message}`);
+    }
+
+    await ctx.answerCbQuery('Cancelled');
   });
 
   bot.on('message', async (ctx, next) => {
