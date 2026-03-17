@@ -1,3 +1,7 @@
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+const axios = require('axios');
 const { config } = require('../config');
 const { queryOne } = require('../utils/dbHelpers');
 const logger = require('../utils/logger');
@@ -8,6 +12,7 @@ const { inferMediaTypeFromPath } = require('../utils/mediaUtils');
 
 const VALID_TYPES = ['post', 'alert', 'weekly'];
 const pendingPosts = new Map();
+const pendingImportedPosts = new Map();
 let idCounter = 0;
 const MAX_MEDIA_COUNT = Math.max(0, Math.min(parseInt(process.env.TG_MAX_MEDIA_PER_POST || '3', 10), 10));
 const DEFAULT_MEDIA_COUNT = MAX_MEDIA_COUNT;
@@ -46,6 +51,10 @@ async function ensureAdminCallbackAccess(ctx) {
 
 function getDefaultProfile() {
   return getChannelProfiles()[0] || null;
+}
+
+function getImportSessionKey(ctx) {
+  return `${ctx.chat?.id || 'chat'}:${ctx.from?.id || 'user'}`;
 }
 
 function profileSelectionKeyboard(postType = 'post', mediaCount = DEFAULT_MEDIA_COUNT) {
@@ -143,6 +152,8 @@ function makePendingEntry(post, type, mediaCount = DEFAULT_MEDIA_COUNT, sourceHi
     rejectedSourcePosts: Array.isArray(rejectionState.rejectedSourcePosts) ? [...rejectionState.rejectedSourcePosts] : [],
     rejectedMediaPaths: Array.isArray(rejectionState.rejectedMediaPaths) ? [...rejectionState.rejectedMediaPaths] : [],
     rejectedMediaHashes: Array.isArray(rejectionState.rejectedMediaHashes) ? [...rejectionState.rejectedMediaHashes] : [],
+    regenerateMode: rejectionState.regenerateMode || 'default',
+    regeneratePayload: rejectionState.regeneratePayload || null,
   };
 }
 
@@ -327,6 +338,31 @@ function parsePostCommandArgs(parts) {
   return { profile: undefined, postType: null, mediaCount: DEFAULT_MEDIA_COUNT };
 }
 
+function parseImportCommandArgs(parts) {
+  const defaultProfile = getDefaultProfile();
+  const arg1 = parts[1];
+  const arg2 = parts[2];
+  const arg3 = parts[3];
+
+  if (!arg1) {
+    return { profile: defaultProfile, postType: 'post', mediaCount: DEFAULT_MEDIA_COUNT };
+  }
+
+  const profileFromArg1 = getChannelProfile(arg1);
+  if (profileFromArg1) {
+    const postType = VALID_TYPES.includes(arg2) ? arg2 : 'post';
+    const mediaCount = Number.isFinite(Number(arg3)) ? Number(arg3) : DEFAULT_MEDIA_COUNT;
+    return { profile: profileFromArg1, postType, mediaCount };
+  }
+
+  if (VALID_TYPES.includes(arg1)) {
+    const mediaCount = Number.isFinite(Number(arg2)) ? Number(arg2) : DEFAULT_MEDIA_COUNT;
+    return { profile: defaultProfile, postType: arg1, mediaCount };
+  }
+
+  return { profile: undefined, postType: null, mediaCount: DEFAULT_MEDIA_COUNT };
+}
+
 function getTypeByCommand(commandName = '') {
   const normalized = String(commandName || '').replace(/^\//, '').trim().toLowerCase();
   if (normalized === 'post_alert') return 'alert';
@@ -359,6 +395,228 @@ async function startGeneration(bot, chatId, profile, postType, initialMediaCount
   });
 }
 
+function getForwardedSourceLabel(message = {}) {
+  const origin = message.forward_origin || null;
+  const fallbackTitle = message.forward_from_chat?.title || message.forward_from_chat?.username || '';
+
+  if (origin?.type === 'channel') {
+    return origin.chat?.title || origin.chat?.username || fallbackTitle || 'forwarded-channel';
+  }
+
+  if (origin?.type === 'chat') {
+    return origin.sender_chat?.title || fallbackTitle || 'forwarded-chat';
+  }
+
+  if (origin?.type === 'user') {
+    const fullName = [origin.sender_user?.first_name, origin.sender_user?.last_name].filter(Boolean).join(' ').trim();
+    return fullName || origin.sender_user?.username || 'forwarded-user';
+  }
+
+  if (origin?.type === 'hidden_user') {
+    return origin.sender_user_name || 'forwarded-user';
+  }
+
+  return fallbackTitle || 'manual';
+}
+
+function sanitizeKeyPart(value, fallback = 'manual') {
+  const normalized = String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+
+  return normalized || fallback;
+}
+
+function getIncomingMessageText(message = {}) {
+  return String(message.caption || message.text || '').trim();
+}
+
+function getIncomingMediaInfo(message = {}) {
+  if (Array.isArray(message.photo) && message.photo.length > 0) {
+    const bestPhoto = message.photo[message.photo.length - 1];
+    return {
+      fileId: bestPhoto.file_id,
+      mediaType: 'photo',
+      extension: '.jpg',
+    };
+  }
+
+  if (message.video?.file_id) {
+    const mimeType = String(message.video.mime_type || '').toLowerCase();
+    return {
+      fileId: message.video.file_id,
+      mediaType: 'video',
+      extension: mimeType === 'video/webm' ? '.webm' : (mimeType === 'video/quicktime' ? '.mov' : '.mp4'),
+    };
+  }
+
+  if (message.document?.file_id) {
+    const mimeType = String(message.document.mime_type || '').toLowerCase();
+    if (mimeType.startsWith('image/')) {
+      const ext = path.extname(String(message.document.file_name || '')).toLowerCase() || '.jpg';
+      return {
+        fileId: message.document.file_id,
+        mediaType: 'photo',
+        extension: ext,
+      };
+    }
+
+    if (mimeType.startsWith('video/')) {
+      const ext = path.extname(String(message.document.file_name || '')).toLowerCase()
+        || (mimeType === 'video/webm' ? '.webm' : '.mp4');
+      return {
+        fileId: message.document.file_id,
+        mediaType: 'video',
+        extension: ext,
+      };
+    }
+  }
+
+  return null;
+}
+
+async function downloadIncomingMedia(bot, message, sourceLabel) {
+  const mediaInfo = getIncomingMediaInfo(message);
+  if (!mediaInfo?.fileId) {
+    return [];
+  }
+
+  const fileLink = await bot.telegram.getFileLink(mediaInfo.fileId);
+  const response = await axios.get(fileLink.toString(), { responseType: 'arraybuffer' });
+  const buffer = Buffer.from(response.data);
+  const hash = crypto.createHash('md5').update(buffer).digest('hex').slice(0, 8);
+  const filename = `${sanitizeKeyPart(sourceLabel)}_${message.message_id}_${hash}${mediaInfo.extension}`;
+  const filePath = path.join(config.paths.mediaCache, filename);
+
+  fs.mkdirSync(config.paths.mediaCache, { recursive: true });
+  fs.writeFileSync(filePath, buffer);
+
+  return [filePath];
+}
+
+function buildImportedAnalysisData(profile, sourcePost) {
+  const sourceTitle = sourcePost.channelTitle || sourcePost.channel || 'manual';
+  const normalizedText = String(sourcePost.text || '').trim();
+  const summary = normalizedText
+    ? normalizedText.replace(/\s+/g, ' ').slice(0, 280)
+    : `Новый пост из ${sourceTitle}`;
+  const keyFacts = normalizedText
+    ? normalizedText
+      .split(/(?<=[.!?])\s+/)
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((item) => item.slice(0, 140))
+    : [`Пост из ${sourceTitle}`];
+
+  return {
+    clusters: [
+      {
+        topic: summary.slice(0, 90) || `Новый пост из ${sourceTitle}`,
+        summary,
+        keyFacts: keyFacts.length > 0 ? keyFacts : [`Пост из ${sourceTitle}`],
+        sources: [sourceTitle],
+        sourceKeys: [sourcePost.sourceKey].filter(Boolean),
+        engagementScore: Number(sourcePost.views) || 0,
+        postIds: [sourcePost.id],
+        postCount: 1,
+        viewsTotal: Number(sourcePost.views) || 0,
+        immediate: true,
+      },
+    ],
+    trends: [],
+    sentiment: {},
+    webData: {},
+    profileId: profile.id,
+    lookbackHours: 1,
+  };
+}
+
+function buildImportedLeadMediaOverride(sourcePost) {
+  const paths = Array.isArray(sourcePost.mediaPaths)
+    ? sourcePost.mediaPaths.filter(Boolean).slice(0, 10)
+    : [];
+
+  if (paths.length === 0) {
+    return null;
+  }
+
+  return {
+    path: paths[0],
+    paths,
+    mediaType: inferMediaTypeFromPath(paths[0]),
+    text: sourcePost.text || '',
+    entities: null,
+    channel: sourcePost.channel,
+    views: Number(sourcePost.views) || 0,
+    telegramPostId: Number(sourcePost.id) || 0,
+    sourceKey: sourcePost.sourceKey,
+    origin: 'manual',
+    totalScore: Number(sourcePost.views) || 0,
+    keywordHits: 0,
+  };
+}
+
+async function buildImportedSourcePost(bot, message) {
+  const text = getIncomingMessageText(message);
+  const sourceLabel = getForwardedSourceLabel(message);
+  const mediaPaths = await downloadIncomingMedia(bot, message, sourceLabel);
+  const syntheticId = Date.now();
+
+  if (!text && mediaPaths.length === 0) {
+    throw new Error('Send a forwarded post, text, photo, or video with caption');
+  }
+
+  return {
+    id: syntheticId,
+    channel: sanitizeKeyPart(sourceLabel),
+    channelTitle: sourceLabel,
+    text,
+    mediaPaths,
+    views: 0,
+    sourceKey: `manual:${syntheticId}:${sanitizeKeyPart(sourceLabel)}`,
+  };
+}
+
+async function startGenerationFromImportedPost(bot, chatId, profile, postType, initialMediaCount, generateFromAnalysis, message) {
+  await bot.telegram.sendMessage(chatId, `Processing source message for <b>${profile.title}</b> (<code>${profile.id}</code>), type <b>${postType}</b>...\nThis may take 1-2 minutes.`, {
+    parse_mode: 'HTML',
+  });
+
+  runInBackground(async () => {
+    try {
+      const sourcePost = await buildImportedSourcePost(bot, message);
+      const analysisData = buildImportedAnalysisData(profile, sourcePost);
+      const leadMediaOverride = buildImportedLeadMediaOverride(sourcePost);
+      const post = await generateFromAnalysis(postType, analysisData, {
+        profileId: profile.id,
+        leadMediaOverride,
+      });
+
+      idCounter += 1;
+      const id = idCounter;
+      const entry = makePendingEntry(post, postType, initialMediaCount, [], [], {
+        regenerateMode: 'source',
+        regeneratePayload: {
+          analysisData,
+          leadMediaOverride,
+        },
+      });
+      applyMediaCount(entry, initialMediaCount);
+      pendingPosts.set(id, entry);
+      rememberPreviewSource(entry);
+
+      await sendPreviewToAdmins(bot, entry, id, '<b>Preview (imported source)</b>');
+      logger.info(`Command /post_from ${postType}: preview sent for profile=${profile.id}, id=${id}`);
+    } catch (err) {
+      logger.error(`Error in /post_from command: ${err.message}`);
+      await bot.telegram.sendMessage(chatId, `Import error: ${err.message}`);
+    }
+  });
+}
+
 function setupCommands(bot, { generateOnly, generateFromAnalysis, publisher }) {
   bot.command('channels', adminOnly, async (ctx) => {
     const profiles = getChannelProfiles();
@@ -371,6 +629,7 @@ function setupCommands(bot, { generateOnly, generateFromAnalysis, publisher }) {
       '<code>/post profile_id</code>',
       '<code>/post_alert profile_id</code>',
       '<code>/post_weekly profile_id</code>',
+      '<code>/post_from profile_id</code>',
     ];
     await ctx.reply(lines.join('\n'), { parse_mode: 'HTML' });
   });
@@ -415,6 +674,50 @@ function setupCommands(bot, { generateOnly, generateFromAnalysis, publisher }) {
   bot.command('post', adminOnly, handlePostCommand);
   bot.command('post_alert', adminOnly, handlePostCommand);
   bot.command('post_weekly', adminOnly, handlePostCommand);
+  bot.command('post_from', adminOnly, async (ctx) => {
+    const parts = ctx.message.text.split(/\s+/).filter(Boolean);
+    const parsed = parseImportCommandArgs(parts);
+
+    if (parsed.profile === undefined) {
+      return ctx.reply('Unknown profile.\n\nUse /channels to list profiles.\nUsage: /post_from profile_id');
+    }
+
+    if (!parsed.profile) {
+      return ctx.reply('No channel profiles configured');
+    }
+
+    if (!VALID_TYPES.includes(parsed.postType)) {
+      return ctx.reply(`Unknown type: <code>${parsed.postType}</code>\n\nAvailable: ${VALID_TYPES.join(', ')}`, {
+        parse_mode: 'HTML',
+      });
+    }
+
+    const initialMediaCount = Math.max(0, Math.min(Number(parsed.mediaCount) || DEFAULT_MEDIA_COUNT, MAX_MEDIA_COUNT));
+    const replyMessage = ctx.message.reply_to_message;
+
+    if (replyMessage) {
+      return startGenerationFromImportedPost(
+        bot,
+        ctx.chat.id,
+        parsed.profile,
+        parsed.postType,
+        initialMediaCount,
+        generateFromAnalysis,
+        replyMessage,
+      );
+    }
+
+    pendingImportedPosts.set(getImportSessionKey(ctx), {
+      profileId: parsed.profile.id,
+      postType: parsed.postType,
+      mediaCount: initialMediaCount,
+    });
+
+    return ctx.reply(
+      `Send or forward the source message for <b>${parsed.profile.title}</b> (<code>${parsed.profile.id}</code>).\nYou can send plain text, a photo with caption, or a video with caption.`,
+      { parse_mode: 'HTML' },
+    );
+  });
 
   bot.command('status', adminOnly, async (ctx) => {
     try {
@@ -497,8 +800,15 @@ function setupCommands(bot, { generateOnly, generateFromAnalysis, publisher }) {
 
     runInBackground(async () => {
       try {
-        const newPost = await generateOnly(postType, { profileId: entry.profileId });
+        const newPost = entry.regenerateMode === 'source' && entry.regeneratePayload?.analysisData
+          ? await generateFromAnalysis(postType, entry.regeneratePayload.analysisData, {
+            profileId: entry.profileId,
+            leadMediaOverride: entry.regeneratePayload.leadMediaOverride || null,
+          })
+          : await generateOnly(postType, { profileId: entry.profileId });
         const nextEntry = makePendingEntry(newPost, postType, entry.mediaCount ?? DEFAULT_MEDIA_COUNT);
+        nextEntry.regenerateMode = entry.regenerateMode || 'default';
+        nextEntry.regeneratePayload = entry.regeneratePayload || null;
         applyMediaCount(nextEntry, nextEntry.mediaCount);
         pendingPosts.set(id, nextEntry);
         rememberPreviewSource(nextEntry);
@@ -623,7 +933,40 @@ function setupCommands(bot, { generateOnly, generateFromAnalysis, publisher }) {
     logger.info(`Post ${id} cancelled via command`);
   });
 
-  logger.info('Bot commands registered: /post, /channels, /status');
+  bot.on('message', async (ctx, next) => {
+    if (!hasAdminAccess(ctx.from?.id)) {
+      return next();
+    }
+
+    if (ctx.message?.text && ctx.message.text.startsWith('/')) {
+      return next();
+    }
+
+    const session = pendingImportedPosts.get(getImportSessionKey(ctx));
+    if (!session) {
+      return next();
+    }
+
+    pendingImportedPosts.delete(getImportSessionKey(ctx));
+
+    const profile = getChannelProfile(session.profileId);
+    if (!profile) {
+      return ctx.reply('Saved import session points to an unknown profile. Start again with /post_from profile_id');
+    }
+
+    await startGenerationFromImportedPost(
+      bot,
+      ctx.chat.id,
+      profile,
+      session.postType || 'post',
+      session.mediaCount ?? DEFAULT_MEDIA_COUNT,
+      generateFromAnalysis,
+      ctx.message,
+    );
+    return undefined;
+  });
+
+  logger.info('Bot commands registered: /post, /post_from, /channels, /status');
 }
 
 module.exports = { setupCommands };
