@@ -372,7 +372,7 @@ function parseImportCommandArgs(parts) {
   const arg3 = parts[3];
 
   if (!arg1) {
-    return { profile: defaultProfile, postType: 'post', mediaCount: DEFAULT_MEDIA_COUNT };
+    return { profile: null, postType: 'post', mediaCount: DEFAULT_MEDIA_COUNT };
   }
 
   const profileFromArg1 = getChannelProfile(arg1);
