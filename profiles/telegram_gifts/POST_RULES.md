@@ -36,6 +36,7 @@
 - Strong or absurd offer.
 - Telegram moved or highlighted old gifts.
 - Concrete floor or price move confirmed by GiftCharts / peek / GiftStat.
+- Model / emoji / sticker lineup with useful source links.
 
 ## Structure preferences from source channels
 - One strong title line.
@@ -76,6 +77,18 @@
 - Exact prices, offers, stars, TON, dollars, quantities.
 - Upgrade / trade / transfer / owner-change framing.
 - Links, usernames, HTML tags.
+
+## Link preservation
+- If the source text contains Telegram links, keep them in the final post unless they are obvious garbage duplicates.
+- Never turn a source post with useful links into plain text without links.
+- If the source lists several assets like `emoji`, `stickers`, `models with %`, keep each asset link in the body of the post.
+- For lineup / model posts, links are part of the value of the post, not an optional extra.
+- Prefer inline HTML links in the body, for example: `<a href="...">emoji</a>`, `<a href="...">stickers</a>`, `<a href="...">models with %</a>`.
+- If the same entity has both a main post link and separate asset links, keep the asset links and optionally keep the main post link if it helps.
+- Do not hide all useful links only in the ad block at the end.
+- If there are 2-5 useful source links, it is better to keep them in one short line than to drop them.
+- Preserve original Telegram URLs exactly. Do not rewrite, shorten, or replace them with plain text labels without href.
+- If the post is built from a forwarded/manual source, treat every meaningful input link as mandatory context unless it is a duplicate of another kept link.
 
 ## Do not do
 - No macro filler.

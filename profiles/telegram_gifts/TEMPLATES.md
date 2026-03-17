@@ -27,6 +27,26 @@ Example:
 Как это вообще назвать: миссклик или подарок для перекупа?
 ```
 
+## Model lineup with links
+- Length: 180-500 chars.
+- Use when the source is a compact collection of models, emoji packs, sticker packs, or upgrade assets.
+- The links are mandatory content here.
+- Keep 2-5 useful Telegram links directly in the body of the post.
+- Prefer one short intro line and then a compact linked list.
+
+Example:
+```html
+🎒 <b>Mood Pack: все доступные модели</b>
+
+Собрали, что уже доступно по <b>Mood Pack</b>:
+— <a href="https://t.me/GiftChangesModels/196">emoji</a>
+— <a href="http://t.me/addemoji/MoodPack_emoji_by_GiftChangesHelper1Bot">emoji pack</a>
+— <a href="http://t.me/addstickers/MoodPack_by_GiftChangesHelper1Bot">stickers</a>
+— <a href="https://t.me/GiftChangesModels/196">models with %</a>
+
+Какой вариант нравится больше?
+```
+
 ## Upgrade / teaser post
 - Length: 180-600 chars.
 - Use when the whole point is a movement in emoji pack, lineup reorder, or visible prep for upgrades.
