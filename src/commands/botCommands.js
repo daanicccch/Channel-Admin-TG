@@ -6,7 +6,7 @@ const { config } = require('../config');
 const { queryOne } = require('../utils/dbHelpers');
 const logger = require('../utils/logger');
 const mediaHandler = require('../generator/mediaHandler');
-const { getTelegramEntityLength } = require('../generator/formatBuilder');
+const { getTelegramEntityLength, escapeHTML } = require('../generator/formatBuilder');
 const { getChannelProfiles, getChannelProfile } = require('../channelProfiles');
 const { inferMediaTypeFromPath } = require('../utils/mediaUtils');
 
@@ -460,6 +460,70 @@ function getIncomingMessageText(message = {}) {
   return String(message.caption || message.text || '').trim();
 }
 
+function getPrimarySourceSection(rawText = '') {
+  const sections = String(rawText || '')
+    .split(/\n\s*\n/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+  return sections[0] || String(rawText || '').trim();
+}
+
+function normalizeLinkLabel(label = '', fallback = 'link') {
+  const cleaned = String(label || '')
+    .replace(/[—,:;]+$/g, '')
+    .replace(/^[—,:;()\s]+|[—,:;()\s]+$/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  return cleaned || fallback;
+}
+
+function extractMeaningfulLinksFromText(rawText = '') {
+  const sourceText = getPrimarySourceSection(rawText);
+  const results = [];
+  const seen = new Set();
+  const pushLink = (label, url) => {
+    const safeUrl = String(url || '').trim();
+    if (!/^https?:\/\/t\.me\//i.test(safeUrl)) return;
+
+    const safeLabel = normalizeLinkLabel(label, 'link');
+    const key = `${safeLabel.toLowerCase()}|${safeUrl.toLowerCase()}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    results.push({ label: safeLabel, url: safeUrl });
+  };
+
+  const beforeParenRegex = /([A-Za-zА-Яа-я0-9][^()\n]{0,60}?)\s*\((https?:\/\/t\.me\/[^)\s]+)\)/gi;
+  let match = null;
+  while ((match = beforeParenRegex.exec(sourceText)) !== null) {
+    pushLink(match[1], match[2]);
+  }
+
+  const afterParenRegex = /\((https?:\/\/t\.me\/[^)\s]+)\)\s*([A-Za-zА-Яа-я0-9%][^()\n,]{0,60})/gi;
+  while ((match = afterParenRegex.exec(sourceText)) !== null) {
+    pushLink(match[2], match[1]);
+  }
+
+  return results.slice(0, 8);
+}
+
+function mergeImportedLinksIntoPostText(postText = '', links = []) {
+  if (!Array.isArray(links) || links.length === 0) {
+    return postText;
+  }
+
+  const currentText = String(postText || '');
+  const missingLinks = links.filter((item) => !currentText.includes(item.url));
+  if (missingLinks.length === 0) {
+    return currentText;
+  }
+
+  const lines = missingLinks.map((item) => `— <a href="${item.url}">${escapeHTML(item.label)}</a>`);
+  const appendix = `\n\n<b>Ссылки:</b>\n${lines.join('\n')}`;
+  return `${currentText.trim()}${appendix}`;
+}
+
 function getIncomingMediaInfo(message = {}) {
   if (Array.isArray(message.photo) && message.photo.length > 0) {
     const bestPhoto = message.photo[message.photo.length - 1];
@@ -591,6 +655,7 @@ async function buildImportedSourcePost(bot, message) {
   const sourceLabel = getForwardedSourceLabel(message);
   const mediaPaths = await downloadIncomingMedia(bot, message, sourceLabel);
   const syntheticId = Date.now();
+  const sourceLinks = extractMeaningfulLinksFromText(text);
 
   if (!text && mediaPaths.length === 0) {
     throw new Error('Send a forwarded post, text, photo, or video with caption');
@@ -604,6 +669,7 @@ async function buildImportedSourcePost(bot, message) {
     mediaPaths,
     views: 0,
     sourceKey: `manual:${syntheticId}:${sanitizeKeyPart(sourceLabel)}`,
+    sourceLinks,
   };
 }
 
@@ -621,6 +687,7 @@ async function startGenerationFromImportedPost(bot, chatId, profile, postType, i
         profileId: profile.id,
         leadMediaOverride,
       });
+      post.text = mergeImportedLinksIntoPostText(post.text, sourcePost.sourceLinks || []);
 
       idCounter += 1;
       const id = idCounter;
@@ -629,6 +696,7 @@ async function startGenerationFromImportedPost(bot, chatId, profile, postType, i
         regeneratePayload: {
           analysisData,
           leadMediaOverride,
+          sourceLinks: sourcePost.sourceLinks || [],
         },
       });
       applyMediaCount(entry, initialMediaCount);
@@ -863,6 +931,9 @@ function setupCommands(bot, { generateOnly, generateFromAnalysis, publisher }) {
             leadMediaOverride: entry.regeneratePayload.leadMediaOverride || null,
           })
           : await generateOnly(postType, { profileId: entry.profileId });
+        if (entry.regenerateMode === 'source') {
+          newPost.text = mergeImportedLinksIntoPostText(newPost.text, entry.regeneratePayload?.sourceLinks || []);
+        }
         const nextEntry = makePendingEntry(newPost, postType, entry.mediaCount ?? DEFAULT_MEDIA_COUNT);
         nextEntry.regenerateMode = entry.regenerateMode || 'default';
         nextEntry.regeneratePayload = entry.regeneratePayload || null;
