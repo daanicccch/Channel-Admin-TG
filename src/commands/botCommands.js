@@ -460,6 +460,18 @@ function getIncomingMessageText(message = {}) {
   return String(message.caption || message.text || '').trim();
 }
 
+function getIncomingMessageEntities(message = {}) {
+  if (message.caption && Array.isArray(message.caption_entities)) {
+    return message.caption_entities;
+  }
+
+  if (message.text && Array.isArray(message.entities)) {
+    return message.entities;
+  }
+
+  return [];
+}
+
 function getPrimarySourceSection(rawText = '') {
   const sections = String(rawText || '')
     .split(/\n\s*\n/)
@@ -474,6 +486,8 @@ function normalizeLinkLabel(label = '', fallback = 'link') {
     .replace(/[—,:;]+$/g, '')
     .replace(/^[—,:;()\s]+|[—,:;()\s]+$/g, '')
     .replace(/\s+/g, ' ')
+    .replace(/^[\s—–\-•|,:;()[\]]+|[\s—–\-•|,:;()[\]]+$/g, '')
+    .replace(/^[^\p{L}\p{N}%$#@]+|[^\p{L}\p{N}%$#@]+$/gu, '')
     .trim();
 
   return cleaned || fallback;
@@ -503,6 +517,140 @@ function extractMeaningfulLinksFromText(rawText = '') {
   const afterParenRegex = /\((https?:\/\/t\.me\/[^)\s]+)\)\s*([A-Za-zА-Яа-я0-9%][^()\n,]{0,60})/gi;
   while ((match = afterParenRegex.exec(sourceText)) !== null) {
     pushLink(match[2], match[1]);
+  }
+
+  return results.slice(0, 8);
+}
+
+function normalizeImportedLinkUrl(url = '') {
+  let normalized = String(url || '').trim();
+  if (!normalized) return '';
+
+  normalized = normalized
+    .replace(/^https?:\/\/telegram\.me\//i, 'https://t.me/')
+    .replace(/^telegram\.me\//i, 'https://t.me/')
+    .replace(/^http:\/\/t\.me\//i, 'https://t.me/')
+    .replace(/^t\.me\//i, 'https://t.me/');
+
+  return /^https?:\/\//i.test(normalized) ? normalized : '';
+}
+
+function pushImportedLink(results = [], seen = new Set(), label = '', url = '') {
+  const safeUrl = normalizeImportedLinkUrl(url);
+  if (!safeUrl) return;
+
+  const safeLabel = normalizeLinkLabel(label, 'link');
+  const key = `${safeLabel.toLowerCase()}|${safeUrl.toLowerCase()}`;
+  if (seen.has(key)) return;
+
+  seen.add(key);
+  results.push({ label: safeLabel, url: safeUrl });
+}
+
+function extractMeaningfulLinksFromEntities(rawText = '', entities = []) {
+  const text = String(rawText || '');
+  const results = [];
+  const seen = new Set();
+
+  if (!text || !Array.isArray(entities) || entities.length === 0) {
+    return results;
+  }
+
+  for (const entity of entities) {
+    if (!entity) continue;
+
+    const type = String(entity.type || '').trim().toLowerCase();
+    const offset = Math.max(0, Number(entity.offset) || 0);
+    const length = Math.max(0, Number(entity.length) || 0);
+    const label = text.slice(offset, offset + length).trim();
+
+    if (type === 'text_link') {
+      pushImportedLink(results, seen, label, entity.url);
+      continue;
+    }
+
+    if (type === 'url') {
+      pushImportedLink(results, seen, label, label);
+      continue;
+    }
+
+    if (type === 'mention') {
+      const mention = label.replace(/^@/, '').trim();
+      if (mention) {
+        pushImportedLink(results, seen, label, `https://t.me/${mention}`);
+      }
+    }
+  }
+
+  return results;
+}
+
+function extractTrailingLinkLabel(rawText = '') {
+  const tail = String(rawText || '').slice(-80);
+  if (!tail.trim()) return '';
+
+  const candidate = tail
+    .split(/\n/)
+    .pop()
+    .split(/[)—–|]/)
+    .pop()
+    .trim()
+    .replace(/[,:;()\s]+$/g, '')
+    .trim();
+
+  if (!candidate) return '';
+
+  const words = candidate.split(/\s+/).filter(Boolean);
+  return words.slice(-5).join(' ').trim();
+}
+
+function extractLeadingLinkLabel(rawText = '') {
+  const head = String(rawText || '').slice(0, 80);
+  if (!head.trim()) return '';
+
+  const candidate = head
+    .replace(/^[\s,.;:()\]-]+/g, '')
+    .split(/\n/)[0]
+    .split(/[—–|]/)[0]
+    .split(/[,:;]/)[0]
+    .trim();
+
+  if (!candidate) return '';
+
+  const words = candidate.split(/\s+/).filter(Boolean);
+  return words.slice(0, 5).join(' ').trim();
+}
+
+function extractMeaningfulLinksFromStructuredText(rawText = '') {
+  const sourceText = getPrimarySourceSection(rawText);
+  const results = [];
+  const seen = new Set();
+  const urlRegex = /\((https?:\/\/(?:t\.me|telegram\.me)\/[^)\s]+)\)/gi;
+  let match = null;
+
+  while ((match = urlRegex.exec(sourceText)) !== null) {
+    const before = sourceText.slice(Math.max(0, match.index - 80), match.index);
+    const after = sourceText.slice(urlRegex.lastIndex, urlRegex.lastIndex + 80);
+    const label = extractTrailingLinkLabel(before) || extractLeadingLinkLabel(after) || 'link';
+    pushImportedLink(results, seen, label, match[1]);
+  }
+
+  return results;
+}
+
+function extractMeaningfulLinks(rawText = '', entities = []) {
+  const results = [];
+  const seen = new Set();
+
+  for (const item of extractMeaningfulLinksFromEntities(rawText, entities)) {
+    pushImportedLink(results, seen, item.label, item.url);
+  }
+
+  const textLinks = extractMeaningfulLinksFromStructuredText(rawText);
+  const fallbackTextLinks = textLinks.length > 0 ? textLinks : extractMeaningfulLinksFromText(rawText);
+
+  for (const item of fallbackTextLinks) {
+    pushImportedLink(results, seen, item.label, item.url);
   }
 
   return results.slice(0, 8);
@@ -652,10 +800,11 @@ function buildImportedLeadMediaOverride(sourcePost) {
 
 async function buildImportedSourcePost(bot, message) {
   const text = getIncomingMessageText(message);
+  const entities = getIncomingMessageEntities(message);
   const sourceLabel = getForwardedSourceLabel(message);
   const mediaPaths = await downloadIncomingMedia(bot, message, sourceLabel);
   const syntheticId = Date.now();
-  const sourceLinks = extractMeaningfulLinksFromText(text);
+  const sourceLinks = extractMeaningfulLinks(text, entities);
 
   if (!text && mediaPaths.length === 0) {
     throw new Error('Send a forwarded post, text, photo, or video with caption');
