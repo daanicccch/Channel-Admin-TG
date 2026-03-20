@@ -494,7 +494,7 @@ function normalizeLinkLabel(label = '', fallback = 'link') {
 }
 
 function extractMeaningfulLinksFromText(rawText = '') {
-  const sourceText = getPrimarySourceSection(rawText);
+  const sourceText = String(rawText || '').trim();
   const results = [];
   const seen = new Set();
   const pushLink = (label, url) => {
@@ -535,22 +535,85 @@ function normalizeImportedLinkUrl(url = '') {
   return /^https?:\/\//i.test(normalized) ? normalized : '';
 }
 
-function pushImportedLink(results = [], seen = new Set(), label = '', url = '') {
+function scoreImportedLinkLabel(label = '', url = '') {
+  const safeLabel = normalizeLinkLabel(label, 'link');
+  const normalized = safeLabel.toLowerCase();
+  let score = safeLabel === 'link' ? 0 : safeLabel.length;
+
+  if (/\b(emoji|stickers?|models?|collection|nft|traits?)\b/i.test(normalized)) score += 20;
+  if (/%/.test(safeLabel)) score += 10;
+  if (new RegExp(escapeRegExp(url), 'i').test(normalized)) score -= 10;
+
+  return score;
+}
+
+function pushImportedLink(results = [], seen = new Map(), label = '', url = '') {
   const safeUrl = normalizeImportedLinkUrl(url);
   if (!safeUrl) return;
 
   const safeLabel = normalizeLinkLabel(label, 'link');
-  const key = `${safeLabel.toLowerCase()}|${safeUrl.toLowerCase()}`;
-  if (seen.has(key)) return;
+  const key = safeUrl.toLowerCase();
+  if (seen.has(key)) {
+    const existingIndex = seen.get(key);
+    const existing = results[existingIndex];
+    if (!existing) return;
 
-  seen.add(key);
+    if (scoreImportedLinkLabel(safeLabel, safeUrl) > scoreImportedLinkLabel(existing.label, existing.url)) {
+      results[existingIndex] = { label: safeLabel, url: safeUrl };
+    }
+    return;
+  }
+
+  seen.set(key, results.length);
   results.push({ label: safeLabel, url: safeUrl });
+}
+
+function isPromoOrReferralLink(item = {}) {
+  const url = normalizeImportedLinkUrl(item.url);
+  if (!url) return true;
+
+  let parsed = null;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return true;
+  }
+
+  const label = normalizeLinkLabel(item.label, 'link');
+  const lowerLabel = label.toLowerCase();
+  const lowerUrl = url.toLowerCase();
+  const pathSegments = parsed.pathname.split('/').filter(Boolean);
+  const search = parsed.search.toLowerCase();
+  const compactText = `${lowerLabel} ${lowerUrl}`;
+
+  if (/(^|[?&])(startapp|startattach|start)=/i.test(search)) return true;
+  if (/(^|[?&])ref(=|_|%5f)|referral/i.test(search)) return true;
+  if (/(buy\/?sell|gift news|floorprice|portals|market|promo|advert|ad\b|sponsor)/i.test(compactText)) return true;
+  if (/\/portals\/market\b/i.test(lowerUrl)) return true;
+  if (/\/tonnel_[^/?]+_bot\b/i.test(lowerUrl)) return true;
+
+  if (pathSegments.length <= 1) {
+    return true;
+  }
+
+  return false;
+}
+
+function filterImportedLinks(links = []) {
+  return (Array.isArray(links) ? links : [])
+    .filter((item) => item?.url)
+    .filter((item) => !isPromoOrReferralLink(item))
+    .slice(0, 4);
+}
+
+function escapeRegExp(value = '') {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function extractMeaningfulLinksFromEntities(rawText = '', entities = []) {
   const text = String(rawText || '');
   const results = [];
-  const seen = new Set();
+  const seen = new Map();
 
   if (!text || !Array.isArray(entities) || entities.length === 0) {
     return results;
@@ -622,9 +685,9 @@ function extractLeadingLinkLabel(rawText = '') {
 }
 
 function extractMeaningfulLinksFromStructuredText(rawText = '') {
-  const sourceText = getPrimarySourceSection(rawText);
+  const sourceText = String(rawText || '').trim();
   const results = [];
-  const seen = new Set();
+  const seen = new Map();
   const urlRegex = /\((https?:\/\/(?:t\.me|telegram\.me)\/[^)\s]+)\)/gi;
   let match = null;
 
@@ -640,7 +703,7 @@ function extractMeaningfulLinksFromStructuredText(rawText = '') {
 
 function extractMeaningfulLinks(rawText = '', entities = []) {
   const results = [];
-  const seen = new Set();
+  const seen = new Map();
 
   for (const item of extractMeaningfulLinksFromEntities(rawText, entities)) {
     pushImportedLink(results, seen, item.label, item.url);
@@ -653,22 +716,25 @@ function extractMeaningfulLinks(rawText = '', entities = []) {
     pushImportedLink(results, seen, item.label, item.url);
   }
 
-  return results.slice(0, 8);
+  return filterImportedLinks(results).slice(0, 8);
 }
 
 function mergeImportedLinksIntoPostText(postText = '', links = []) {
-  if (!Array.isArray(links) || links.length === 0) {
+  const safeLinks = filterImportedLinks(links);
+  if (safeLinks.length === 0) {
     return postText;
   }
 
   const currentText = String(postText || '');
-  const missingLinks = links.filter((item) => !currentText.includes(item.url));
+  const missingLinks = safeLinks.filter((item) => !currentText.includes(item.url));
   if (missingLinks.length === 0) {
     return currentText;
   }
 
-  const lines = missingLinks.map((item) => `— <a href="${item.url}">${escapeHTML(item.label)}</a>`);
-  const appendix = `\n\n<b>Ссылки:</b>\n${lines.join('\n')}`;
+  const inlineLinks = missingLinks
+    .map((item) => `<a href="${item.url}">${escapeHTML(item.label)}</a>`)
+    .join(' • ');
+  const appendix = `\n\n<b>Полезное:</b> ${inlineLinks}`;
   return `${currentText.trim()}${appendix}`;
 }
 
